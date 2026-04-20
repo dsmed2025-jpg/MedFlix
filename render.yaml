@@ -1,8 +1,8 @@
 services:
   - type: web
-    name: pinguim-filmes
+    name: medflix
     runtime: python
-    buildCommand: pip install -r requirements.txt
+    buildCommand: pip install -r requirements.txt && python setup_files.py
     startCommand: gunicorn app:app --workers 2 --timeout 120 --bind 0.0.0.0:$PORT
     envVars:
       - key: PINGUIM_SECRET_KEY
@@ -12,6 +12,6 @@ services:
       - key: TMDB_READ_TOKEN
         value: eyJhbGciOiJIUzI1NiJ9.eyJhdWQiOiIwY2M2YmZkOTFjYmRiMTc3NWI3OWZkNDI2N2I5ZTNjMiIsIm5iZiI6MTc3NjMxMDY5MS4zMTIsInN1YiI6IjY5ZTA1OWEzNDEzMDRhMzRkZDM5NGExMiIsInNjb3BlcyI6WyJhcGlfcmVhZCJdLCJ2ZXJzaW9uIjoxfQ.vaGx7CG_gCVlpm9niMwMkuw4nsiGVxYCGUhkEa7yTfw
     disk:
-      name: pinguim-db
+      name: medflix-db
       mountPath: /opt/render/project/src
       sizeGB: 1
