@@ -1,0 +1,16 @@
+{
+  "name": "Pinguim Filmes",
+  "short_name": "Pinguim TV",
+  "description": "Sua plataforma de filmes e séries",
+  "start_url": "/home",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#0d0d1a",
+  "theme_color": "#0d0d1a",
+  "icons": [
+    { "src": "/static/icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any maskable" },
+    { "src": "/static/icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable" }
+  ],
+  "screenshots": [],
+  "categories": ["entertainment"]
+}
