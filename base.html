@@ -1,0 +1,432 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>{% block title %}Pinguim Filmes{% endblock %}</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=Manrope:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
+    <!-- PWA -->
+    <link rel="manifest" href="{{ url_for('static', filename='manifest.json') }}">
+    <meta name="theme-color" content="#0d0d1a">
+    <meta name="mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-title" content="Pinguim TV">
+    <link rel="apple-touch-icon" href="{{ url_for('static', filename='icons/icon-192.png') }}">
+</head>
+<body data-page="{{ request.endpoint or '' }}">
+    {% if username %}
+    {% with messages = get_flashed_messages(with_categories=true) %}
+    {% if messages %}
+    <div class="flash-messages">
+        {% for category, message in messages %}
+        <div class="flash flash-{{ category }}">{{ message }}</div>
+        {% endfor %}
+    </div>
+    {% endif %}
+    {% endwith %}
+    <header class="imdb-header">
+        <div class="imdb-header-inner">
+            <div class="imdb-header-left">
+                <a class="imdb-logo" href="{{ url_for('home') }}">
+                    <span class="imdb-logo-text">PINGUIM</span>
+                    <span class="imdb-logo-sub">FILMES</span>
+                </a>
+                <nav class="imdb-nav">
+                    <!-- Filmes -->
+                    <div class="imdb-nav-dropdown">
+                        <button class="imdb-nav-btn">🎬 Filmes ▾</button>
+                        <div class="imdb-dropdown">
+                            <span class="imdb-dropdown-label">Destaques</span>
+                            <a href="{{ url_for('secao', categoria='Filmes') }}?tmdb=trending">🔥 Em Alta</a>
+                            <a href="{{ url_for('secao', categoria='Filmes') }}?tmdb=popular">⭐ Populares</a>
+                            <a href="{{ url_for('secao', categoria='Filmes') }}?tmdb=top_rated">🏆 Mais Votados</a>
+                            <a href="{{ url_for('secao', categoria='Filmes') }}?tmdb=upcoming">🎬 Lançamentos</a>
+                            <a href="{{ url_for('secao', categoria='Filmes') }}?tmdb=now_playing">🎥 Nos Cinemas</a>
+                            <hr>
+                            <span class="imdb-dropdown-label">Gêneros</span>
+                            <a href="{{ url_for('secao', categoria='Ação') }}">💥 Ação</a>
+                            <a href="{{ url_for('secao', categoria='Filmes') }}?tmdb=adventure">🗺️ Aventura</a>
+                            <a href="{{ url_for('secao', categoria='Animações') }}">🎨 Animação</a>
+                            <a href="{{ url_for('secao', categoria='Comédia') }}">😂 Comédia</a>
+                            <a href="{{ url_for('secao', categoria='Documentários') }}">🎥 Documentário</a>
+                            <a href="{{ url_for('secao', categoria='Família') }}">👨‍👩‍👧 Família</a>
+                            <a href="{{ url_for('secao', categoria='Terror') }}">💀 Terror</a>
+                            <a href="{{ url_for('secao', categoria='Filmes') }}?tmdb=romance">💕 Romance</a>
+                            <a href="{{ url_for('secao', categoria='Filmes') }}?tmdb=sci_fi">🚀 Ficção Científica</a>
+                            <a href="{{ url_for('secao', categoria='Stand Up Commedy') }}">🎤 Stand Up</a>
+                        </div>
+                    </div>
+                    <!-- Séries -->
+                    <div class="imdb-nav-dropdown">
+                        <button class="imdb-nav-btn">📺 Séries ▾</button>
+                        <div class="imdb-dropdown">
+                            <span class="imdb-dropdown-label">Destaques</span>
+                            <a href="{{ url_for('secao', categoria='Seriado') }}?tmdb=trending_tv">🔥 Em Alta</a>
+                            <a href="{{ url_for('secao', categoria='Seriado') }}?tmdb=popular_tv">⭐ Populares</a>
+                            <a href="{{ url_for('secao', categoria='Seriado') }}?tmdb=top_rated_tv">🏆 Mais Votados</a>
+                            <hr>
+                            <span class="imdb-dropdown-label">Gêneros</span>
+                            <a href="{{ url_for('secao', categoria='Seriado') }}?tmdb=action_adventure">💥 Ação e Aventura</a>
+                            <a href="{{ url_for('secao', categoria='Seriado') }}?tmdb=comedy_tv">😂 Comédia</a>
+                            <a href="{{ url_for('secao', categoria='Seriado') }}?tmdb=drama_tv">🎭 Drama</a>
+                            <a href="{{ url_for('secao', categoria='Seriado') }}?tmdb=sci_fi_fantasy">🚀 Ficção e Fantasia</a>
+                            <a href="{{ url_for('secao', categoria='Seriado') }}?tmdb=mystery_tv">🔍 Mistério</a>
+                            <a href="{{ url_for('secao', categoria='Seriado') }}?tmdb=kids">👶 Infantis</a>
+                            <hr>
+                            <span class="imdb-dropdown-label">Catálogo</span>
+                            <a href="{{ url_for('secao', categoria='Seriado') }}">📺 Todas as Séries</a>
+                            <a href="{{ url_for('secao', categoria='Animações') }}">🎨 Animes</a>
+                        </div>
+                    </div>
+
+                    <!-- Canais Ao Vivo -->
+                    <a href="{{ url_for('canais') }}" class="imdb-nav-link nav-live">
+                        <span class="live-dot"></span>📡 Ao Vivo
+                    </a>
+                    <a href="{{ url_for('explorar') }}" class="imdb-nav-link">🔍 Busca</a>
+                </nav>
+            </div>
+            <div class="imdb-header-right">
+                {% if user_info %}
+                <div class="user-area" id="userAreaBtn" onclick="toggleUserPanel()">
+                    <div class="user-avatar-chip" id="headerAvatar">🐧</div>
+                    <span class="user-name-label">{{ user_info.username }}</span>
+                </div>
+                {% endif %}
+                <form class="imdb-search" action="{{ url_for('explorar') }}" method="get">
+                    <input type="search" name="q" placeholder="Buscar filmes, séries..." value="{{ request.args.get('q', '') }}">
+                    <button type="submit">🔍</button>
+                </form>
+                <button class="imdb-refresh" onclick="refreshTMDB()" title="Atualizar dados TMDB (diário)">🔄 Atualizar</button>
+                <button class="app-download-btn" onclick="smartDownload()" title="Baixar app">📱 App</button>
+                <a class="imdb-link" href="{{ url_for('importar_m3u') }}">Importar</a>
+                <a class="imdb-link" href="{{ url_for('logout') }}">Sair</a>
+            </div>
+        </div>
+    </header>
+    {% endif %}
+
+    <main class="imdb-main">{% block content %}{% endblock %}</main>
+
+    {% if username %}
+    <!-- ═══ PAINEL DO USUÁRIO ═══ -->
+    {% if user_info %}
+    <div class="user-panel-overlay" id="userPanelOverlay" onclick="toggleUserPanel()" style="display:none"></div>
+    <div class="user-panel" id="userPanel" style="display:none">
+        <div class="user-panel-header">
+            <div class="user-panel-avatar-big" id="panelAvatarDisplay">🐧</div>
+            <div class="user-panel-info">
+                <strong>{{ user_info.username }}</strong>
+                <span>{{ user_info.email or '(sem e-mail cadastrado)' }}</span>
+                <span class="validade-badge {% if user_info.expired %}expired{% endif %}">
+                    📅 Válido até {{ user_info.validade }}
+                    {% if user_info.expired %}<span class="exp-tag">EXPIRADO</span>{% endif %}
+                </span>
+            </div>
+        </div>
+        <button class="ghost-btn" style="width:100%;margin-top:.8rem" onclick="openAvatarModal()">🎨 Trocar Avatar</button>
+        <a class="ghost-btn" style="width:100%;margin-top:.4rem;text-align:center;display:block" href="{{ url_for('logout') }}">🚪 Sair</a>
+    </div>
+    <!-- ═══ MODAL GALERIA DE AVATARES ═══ -->
+    <div class="modal-overlay" id="avatarModalOverlay" style="display:none" onclick="closeAvatarModal()"></div>
+    <div class="avatar-modal" id="avatarModal" style="display:none">
+        <h3 style="margin:0 0 1rem;color:#fff">🎨 Escolha seu Avatar</h3>
+        <div class="avatar-grid" id="avatarGrid"></div>
+        <button class="ghost-btn" style="margin-top:1rem;width:100%" onclick="closeAvatarModal()">Cancelar</button>
+    </div>
+    {% endif %}
+    <!-- ═══ MODAL iOS PWA ═══ -->
+    <div class="modal-overlay" id="iosPwaOverlay" style="display:none" onclick="closeIosModal()"></div>
+    <div class="ios-pwa-modal" id="iosPwaModal" style="display:none">
+        <div style="text-align:center;margin-bottom:1rem">
+            <img src="{{ url_for('static', filename='icons/icon-192.png') }}" width="72" height="72" alt="Pinguim TV" style="border-radius:16px;margin-bottom:.5rem">
+            <h3 style="margin:0;color:#fff">Instalar Pinguim TV</h3>
+            <p style="color:#aaa;font-size:.85rem;margin:.4rem 0 0">Adicione à sua tela de início para ter o app completo no iPhone!</p>
+        </div>
+        <div class="ios-pwa-steps">
+            <div class="ios-step"><span class="ios-step-num">1</span><span>Toque no botão <strong>Compartilhar</strong> <span style="font-size:1.2rem">⎋</span> na barra inferior do Safari</span></div>
+            <div class="ios-step"><span class="ios-step-num">2</span><span>Role para baixo e toque em <strong>"Adicionar à Tela de Início"</strong></span></div>
+            <div class="ios-step"><span class="ios-step-num">3</span><span>Toque em <strong>"Adicionar"</strong> e pronto — o ícone aparece na sua tela! 🎉</span></div>
+        </div>
+        <button class="btn-play" style="width:100%;margin-top:1.2rem;justify-content:center" onclick="closeIosModal()">✓ Entendi!</button>
+    </div>
+
+    <script>window.PINGUIM_API_ITEMS = {{ '/api/items'|tojson }};</script>
+    <script src="{{ url_for('static', filename='app.js') }}"></script>
+    <script>
+    async function refreshTMDB() {
+        const btn = document.querySelector('.imdb-refresh');
+        if (btn) { btn.textContent = '⏳'; btn.disabled = true; }
+        try {
+            const res = await fetch('/api/tmdb/refresh');
+            const data = await res.json();
+            if (data.success) { location.reload(); }
+            else { alert('Erro: ' + (data.error || 'Desconhecido')); }
+        } catch(e) { alert('Erro: ' + e.message); }
+        if (btn) { btn.textContent = '🔄'; btn.disabled = false; }
+    }
+
+    // ── Cover System v10 — robusto, sem race conditions ──────────────────────
+    var DEAD_SRCS = ['lgfp.one','goo.gl','t.co/','bit.ly','tinyurl.com',
+                     'picsum.photos','placehold','undefined','null'];
+
+    // Cache: titulo → url (string) | 'MISS' | undefined (não resolvido)
+    var _cache   = {};
+    // Fila: titulo → [img, img, ...]  (aguardando resolução)
+    var _waiting = {};
+    // Batch queue: [{titulo, media_type}]
+    var _queue   = [];
+    var _timer   = null;
+    var _obs     = null;
+
+    function _isDead(src) {
+        if (!src || src === '' || src === 'undefined' || src === 'null') return true;
+        for (var i = 0; i < DEAD_SRCS.length; i++) {
+            if (src.indexOf(DEAD_SRCS[i]) !== -1) return true;
+        }
+        return false;
+    }
+
+    function _skeleton(img, on) {
+        var w = img && img.parentElement;
+        if (!w) return;
+        if (on) {
+            if (!w.querySelector('.b-sk')) {
+                img.style.opacity = '0';
+                var s = document.createElement('div');
+                s.className = 'b-sk';
+                s.style.cssText = 'position:absolute;inset:0;background:linear-gradient(90deg,#1a1a2e 25%,#2a2a4e 50%,#1a1a2e 75%);background-size:200% 100%;animation:skeleton-shimmer 1.4s infinite;border-radius:inherit;z-index:2;pointer-events:none;';
+                w.style.position = 'relative';
+                w.appendChild(s);
+            }
+        } else {
+            w.querySelectorAll('.b-sk').forEach(function(n){ n.remove(); });
+            img.style.opacity = '1';
+        }
+    }
+
+    function _placeholder(img, titulo) {
+        var wrap = img && img.closest('.poster-img');
+        if (!wrap) return;
+        var t   = (titulo || img.alt || 'Sem título').slice(0, 60);
+        var hue = ((t.charCodeAt(0)||65)*37 + (t.charCodeAt(1)||65)*13) % 360;
+        wrap.outerHTML =
+            '<div class="poster-no-img" style="background:linear-gradient(160deg,'
+            + 'hsl(' + hue + ',40%,12%) 0%,hsl(' + ((hue+40)%360) + ',35%,18%) 100%)">'
+            + '<span class="pni-icon">🎬</span>'
+            + '<span class="pni-title">' + t + '</span>'
+            + '</div>';
+    }
+
+    function _applyUrl(img, url, titulo) {
+        _skeleton(img, false);
+        if (!url || url === 'MISS') { _placeholder(img, titulo); return; }
+        img.onload  = function() { _skeleton(img, false); img.style.opacity = '1'; };
+        img.onerror = function() { _skeleton(img, false); _placeholder(img, titulo); };
+        img.src = url;
+    }
+
+    // Public: called by onerror and boot
+    function handleImgError(img) {
+        img.onerror = null;
+        var titulo = (img.dataset.titulo || img.alt || '').trim();
+        var media  = img.dataset.media || 'movie';
+        if (!titulo) { _placeholder(img, ''); return; }
+
+        // Already resolved?
+        if (_cache[titulo] !== undefined) {
+            _applyUrl(img, _cache[titulo], titulo);
+            return;
+        }
+
+        // Queue this image
+        _skeleton(img, true);
+        if (!_waiting[titulo]) {
+            _waiting[titulo] = [];
+            _queue.push({titulo: titulo, media_type: media});
+        }
+        _waiting[titulo].push(img);
+
+        // Debounce flush
+        if (_timer) clearTimeout(_timer);
+        _timer = setTimeout(_flush, 60);
+    }
+
+    async function _flush() {
+        if (!_queue.length) return;
+
+        // Drain queue in chunks of 40
+        var chunk = _queue.splice(0, 40);
+
+        try {
+            var res  = await fetch('/api/covers/batch', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify(chunk)
+            });
+            var data = await res.json();
+            var results = data.results || {};
+        } catch(e) {
+            results = {};
+        }
+
+        chunk.forEach(function(item) {
+            var t    = item.titulo;
+            var url  = results[t] || '';
+            _cache[t] = url || 'MISS';
+            var imgs = _waiting[t] || [];
+            delete _waiting[t];
+            imgs.forEach(function(img) { _applyUrl(img, url, t); });
+        });
+
+        // More in queue? flush again
+        if (_queue.length) { _timer = setTimeout(_flush, 80); }
+    }
+
+    function _getObs() {
+        if (_obs) return _obs;
+        _obs = new IntersectionObserver(function(entries) {
+            entries.forEach(function(e) {
+                if (!e.isIntersecting) return;
+                _obs.unobserve(e.target);
+                handleImgError(e.target);
+            });
+        }, { rootMargin: '400px' });
+        return _obs;
+    }
+
+    // Boot — run once DOM is ready
+    function _bootCovers() {
+        var obs = _getObs();
+        document.querySelectorAll('img[data-titulo]').forEach(function(img) {
+            var src = img.getAttribute('src');
+            if (_isDead(src)) {
+                img.removeAttribute('src');
+                obs.observe(img);
+            } else {
+                img.addEventListener('error', function() { handleImgError(this); }, {once:true});
+                if (img.complete && img.naturalWidth > 0) img.style.opacity = '1';
+                else img.addEventListener('load', function(){ this.style.opacity='1'; }, {once:true});
+            }
+        });
+    }
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', _bootCovers);
+    } else {
+        _bootCovers();
+    }
+    </script>
+
+    <script>
+    /* ═══ ÁREA DO USUÁRIO — painel + avatar + download ═══ */
+    var AVATARS = [
+        {id:'penguin',   e:'🐧', label:'Pinguim'},
+        {id:'cat',       e:'🐱', label:'Gato'},
+        {id:'robot',     e:'🤖', label:'Robô'},
+        {id:'alien',     e:'👽', label:'Alien'},
+        {id:'ghost',     e:'👻', label:'Fantasma'},
+        {id:'star',      e:'⭐', label:'Estrela'},
+        {id:'fire',      e:'🔥', label:'Fogo'},
+        {id:'crown',     e:'👑', label:'Coroa'},
+        {id:'diamond',   e:'💎', label:'Diamante'},
+        {id:'ninja',     e:'🥷', label:'Ninja'},
+        {id:'wizard',    e:'🧙', label:'Mago'},
+        {id:'bear',      e:'🐻', label:'Urso'},
+        {id:'fox',       e:'🦊', label:'Raposa'},
+        {id:'lion',      e:'🦁', label:'Leão'},
+        {id:'unicorn',   e:'🦄', label:'Unicórnio'},
+    ];
+    var CURRENT_AVATAR = '{{ user_info.avatar if user_info else "penguin" }}';
+
+    function avatarEmoji(id) {
+        var a = AVATARS.find(function(x){return x.id===id;});
+        return a ? a.e : '🐧';
+    }
+
+    function applyAvatar(id) {
+        CURRENT_AVATAR = id;
+        var e = avatarEmoji(id);
+        var chip = document.getElementById('headerAvatar');
+        var panel = document.getElementById('panelAvatarDisplay');
+        if (chip)  chip.textContent  = e;
+        if (panel) panel.textContent = e;
+    }
+
+    // Boot: set emoji from stored avatar
+    document.addEventListener('DOMContentLoaded', function(){
+        applyAvatar(CURRENT_AVATAR);
+    });
+
+    function toggleUserPanel() {
+        var panel   = document.getElementById('userPanel');
+        var overlay = document.getElementById('userPanelOverlay');
+        if (!panel) return;
+        var open = panel.style.display !== 'none';
+        panel.style.display   = open ? 'none' : 'block';
+        overlay.style.display = open ? 'none' : 'block';
+    }
+
+    function openAvatarModal() {
+        toggleUserPanel();
+        var grid = document.getElementById('avatarGrid');
+        if (!grid) return;
+        grid.innerHTML = AVATARS.map(function(a){
+            var active = a.id === CURRENT_AVATAR ? ' avatar-item-active' : '';
+            return '<div class="avatar-item' + active + '" onclick="selectAvatar(\'' + a.id + '\')" title="' + a.label + '">' +
+                '<span class="avatar-emoji">' + a.e + '</span>' +
+                '<span class="avatar-label">' + a.label + '</span>' +
+                '</div>';
+        }).join('');
+        document.getElementById('avatarModalOverlay').style.display = 'block';
+        document.getElementById('avatarModal').style.display = 'block';
+    }
+
+    function closeAvatarModal() {
+        document.getElementById('avatarModalOverlay').style.display = 'none';
+        document.getElementById('avatarModal').style.display = 'none';
+    }
+
+    function selectAvatar(id) {
+        document.querySelectorAll('.avatar-item').forEach(function(el){ el.classList.remove('avatar-item-active'); });
+        var sel = document.querySelector('.avatar-item[onclick*="' + id + '"]');
+        if (sel) sel.classList.add('avatar-item-active');
+        fetch('/api/user/avatar', {
+            method: 'POST',
+            headers: {'Content-Type':'application/json'},
+            body: JSON.stringify({avatar: id})
+        }).then(function(r){ return r.json(); }).then(function(d){
+            if (d.ok) { applyAvatar(id); closeAvatarModal(); }
+        }).catch(function(){});
+    }
+
+    /* ═══ DOWNLOAD INTELIGENTE ═══ */
+    function smartDownload() {
+        var ua = navigator.userAgent || '';
+        var isIOS     = /iPad|iPhone|iPod/.test(ua) && !window.MSStream;
+        var isAndroid = /Android/.test(ua);
+        if (isAndroid) {
+            var a = document.createElement('a');
+            a.href = '/static/pinguim.apk';
+            a.download = 'PinguimTV.apk';
+            a.click();
+        } else if (isIOS) {
+            document.getElementById('iosPwaOverlay').style.display = 'block';
+            document.getElementById('iosPwaModal').style.display   = 'block';
+        } else {
+            // Desktop: show QR / info
+            alert('📱 Abra este site no seu celular para instalar o app!\n\nAndroid: baixa o APK\niPhone: instala como PWA');
+        }
+    }
+
+    function closeIosModal() {
+        document.getElementById('iosPwaOverlay').style.display = 'none';
+        document.getElementById('iosPwaModal').style.display   = 'none';
+    }
+    </script>
+    {% endif %}
+</body>
+</html>

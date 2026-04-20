@@ -1,0 +1,39 @@
+{% extends "base.html" %}
+
+{% block title %}{{ titulo }} | Pinguim Filmes{% endblock %}
+
+{% block content %}
+<section class="hero-band">
+    <div>
+        <span class="eyebrow">Colecao</span>
+        <h1 class="page-title">{{ titulo }}</h1>
+        <p class="page-subtitle">{{ descricao }}</p>
+    </div>
+</section>
+
+<section class="panel">
+    <div class="results-meta">
+        <span>{{ total }} item{% if total != 1 %}s{% endif %} nesta colecao</span>
+    </div>
+    <div class="catalog-grid">
+        {% for item in itens %}
+        <a class="media-card vertical" href="{{ url_for('assistir', id_filme=item.id) }}">
+            <div class="media-thumb">
+                <img src="{{ item.capa }}" alt="{{ item.titulo }}" loading="lazy" onerror="this.src='https://picsum.photos/seed/{{ item.id }}/480/270'">
+                <span class="pill">{{ item.genero }}</span>
+            </div>
+            <div class="media-body">
+                <strong>{{ item.titulo }}</strong>
+                <span>{{ item.subgrupo or item.genero }}</span>
+            </div>
+        </a>
+        {% else %}
+        <div class="empty-state">
+            <h3>Nada encontrado</h3>
+            <p>Essa colecao ainda nao teve itens suficientes encontrados na base atual.</p>
+        </div>
+        {% endfor %}
+    </div>
+    {% include "pagination.html" %}
+</section>
+{% endblock %}

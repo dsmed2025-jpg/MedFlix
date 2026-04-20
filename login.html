@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Login | Pinguim Filmes</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=Manrope:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
+</head>
+<body class="login-simple-shell">
+    <form class="login-simple-card" method="post">
+        <div class="login-simple-logo">🐧</div>
+        <h1>Pinguim Filmes</h1>
+        <p>Entre para acessar o catalogo.</p>
+
+        {% if error %}
+        <div class="alert error">{{ error }}</div>
+        {% endif %}
+
+        <label class="input-group">
+            <span>Usuario</span>
+            <input type="text" name="username" autocomplete="username" placeholder="demo" required>
+        </label>
+
+        <label class="input-group">
+            <span>Senha</span>
+            <input type="password" name="password" autocomplete="current-password" placeholder="demo123" required>
+        </label>
+
+        <button class="primary-btn wide" type="submit">Entrar</button>
+        <p class="helper-text">Demo: <strong>demo</strong> / <strong>demo123</strong></p>
+    </form>
+</body>
+</html>

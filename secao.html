@@ -1,0 +1,85 @@
+{% extends "base.html" %}
+{% block title %}{{ categoria }} | Pinguim Filmes{% endblock %}
+
+{% block content %}
+<div class="secao-page">
+    <div class="page-hero">
+        <div>
+            <div class="eyebrow">{{ cfg.icon }}</div>
+            <h1 class="page-title" style="color:{{ cfg.cor }}">{{ categoria }}</h1>
+        </div>
+    </div>
+
+    {% if tmdb_genres %}
+    <div class="imdb-genres-bar">
+        {% for genre in tmdb_genres %}
+        <a class="genre-link {% if tmdb_key == genre.key %}active{% endif %}"
+           href="{{ url_for('secao', categoria=categoria, tmdb=genre.key) }}">
+            {{ genre.name }}
+        </a>
+        {% endfor %}
+    </div>
+    {% endif %}
+
+    {% if tmdb_items %}
+    <div class="results-meta">
+        <span>{{ tmdb_items|length }} títulos ordenados por popularidade IMDb</span>
+    </div>
+    <div class="catalog-grid">
+        {% for item in tmdb_items %}
+        <a class="poster-card" href="{{ url_for('tmdb_play', t=item.titulo, id=item.tmdb_id or None, m=item.media_type or 'movie', rd=item.release_date or None, capa=item.capa or None, sinopse=item.sinopse or None) }}">
+            <div class="poster-rank-num">#{{ loop.index }}</div>
+            <div class="poster-img">
+                <img src="{{ item.capa }}" alt="{{ item.titulo }}" loading="lazy"
+                     data-titulo="{{ item.titulo|e }}" data-media="{{ item.media_type or 'movie' }}"
+                     onerror="handleImgError(this)">
+            </div>
+            {% if item.nota %}
+            <div class="poster-rating">⭐ {{ item.nota }}</div>
+            {% endif %}
+            <div class="poster-overlay">
+                <div class="poster-play"><svg viewBox="0 0 12 12"><polygon points="2,1 11,6 2,11"/></svg></div>
+                <div class="poster-title">{{ item.titulo[:30] }}</div>
+                <div class="poster-sub">{% if item.ano %}{{ item.ano }}{% endif %}</div>
+            </div>
+        </a>
+        {% endfor %}
+    </div>
+    {% else %}
+
+    {% if itens %}
+    <div class="results-meta">
+        <span>{{ total }} títulos no catálogo</span>
+    </div>
+    <div class="catalog-grid">
+        {% for item in itens %}
+        <a class="poster-card" href="{{ url_for('assistir', id_filme=item.id) if item.id else '#' }}">
+            <div class="poster-rank-num">#{{ loop.index }}</div>
+            {% if item.capa %}
+            <div class="poster-img">
+                <img src="{{ item.capa }}" alt="{{ item.titulo or item.subgrupo }}" loading="lazy"
+                     data-titulo="{{ (item.titulo or item.subgrupo)|e }}" data-media="movie"
+                     onerror="handleImgError(this)">
+            </div>
+            {% else %}
+            <div class="poster-no-img"><span class="pni-icon">{{ cfg.icon }}</span></div>
+            {% endif %}
+            <div class="poster-overlay">
+                <div class="poster-play"><svg viewBox="0 0 12 12"><polygon points="2,1 11,6 2,11"/></svg></div>
+                <div class="poster-title">{{ (item.titulo or item.subgrupo)[:30] }}</div>
+                <div class="poster-sub">{{ item.subgrupo or item.genero }}</div>
+            </div>
+        </a>
+        {% endfor %}
+    </div>
+    {% include "pagination.html" %}
+    {% else %}
+    <div class="empty-state">
+        <h3>Nenhum título encontrado</h3>
+        <p>Tente outra categoria ou use a busca.</p>
+    </div>
+    {% endif %}
+
+    {% endif %}
+</div>
+{% endblock %}

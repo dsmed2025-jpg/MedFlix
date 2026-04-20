@@ -1,0 +1,177 @@
+{% extends "base.html" %}
+{% block title %}Charts | Pinguim Filmes{% endblock %}
+
+{% block content %}
+<div class="charts-page">
+    <div class="charts-header">
+        <h1>📊 Charts IMDb</h1>
+        <p>Os rankings mais populares de filmes e séries - clique para assistir</p>
+        <div class="charts-nav">
+            <a href="#top-movies" class="charts-nav-link">🏆 Top Filmes</a>
+            <a href="#top-tv" class="charts-nav-link">📺 Top Séries</a>
+            <a href="#popular-movies" class="charts-nav-link">⭐ Filmes Populares</a>
+            <a href="#popular-tv" class="charts-nav-link">📺 Séries Populares</a>
+            <a href="#trending-movies" class="charts-nav-link">🔥 Em Alta Filmes</a>
+            <a href="#trending-tv" class="charts-nav-link">📺 Em Alta Séries</a>
+        </div>
+    </div>
+
+    <div class="charts-grid-full">
+        <!-- TOP MOVIES -->
+        <section class="chart-section-full" id="top-movies">
+            <div class="chart-header">
+                <h2>🏆 Top Filmes IMDb</h2>
+                <span class="chart-source">Os melhores filmes de todos os tempos</span>
+            </div>
+            <div class="catalog-grid">
+                {% for item in charts_data.top_movies %}
+            <a class="poster-card" href="{{ url_for('tmdb_play', t=item.titulo, id=item.tmdb_id or None, m=item.media_type or 'movie', rd=item.release_date or None, capa=item.capa or None, sinopse=item.sinopse or None) }}">
+                    <div class="poster-rank-num">#{{ loop.index }}</div>
+                    <div class="poster-img">
+                        <img src="{{ item.capa }}" alt="{{ item.titulo }}" loading="lazy"  data-media="movie" onerror="handleImgError(this)">
+                    </div>
+                    {% if item.nota %}
+                    <div class="poster-rating">⭐ {{ item.nota }}</div>
+                    {% endif %}
+                    <div class="poster-overlay">
+                        <div class="poster-play"><svg viewBox="0 0 12 12"><polygon points="2,1 11,6 2,11"/></svg></div>
+                        <div class="poster-title">{{ item.titulo[:30] }}</div>
+                        <div class="poster-sub">{% if item.ano %}{{ item.ano }}{% endif %}</div>
+                    </div>
+                </a>
+                {% endfor %}
+            </div>
+        </section>
+
+        <!-- TOP TV -->
+        <section class="chart-section-full" id="top-tv">
+            <div class="chart-header">
+                <h2>📺 Top Séries IMDb</h2>
+                <span class="chart-source">As melhores séries de todos os tempos</span>
+            </div>
+            <div class="catalog-grid">
+                {% for item in charts_data.top_tv %}
+            <a class="poster-card" href="{{ url_for('tmdb_play', t=item.titulo, id=item.tmdb_id or None, m=item.media_type or 'movie', rd=item.release_date or None, capa=item.capa or None, sinopse=item.sinopse or None) }}">
+                    <div class="poster-rank-num">#{{ loop.index }}</div>
+                    <div class="poster-img">
+                        <img src="{{ item.capa }}" alt="{{ item.titulo }}" loading="lazy"  data-media="tv" onerror="handleImgError(this)">
+                    </div>
+                    {% if item.nota %}
+                    <div class="poster-rating">⭐ {{ item.nota }}</div>
+                    {% endif %}
+                    <div class="poster-overlay">
+                        <div class="poster-play"><svg viewBox="0 0 12 12"><polygon points="2,1 11,6 2,11"/></svg></div>
+                        <div class="poster-title">{{ item.titulo[:30] }}</div>
+                        <div class="poster-sub">{% if item.ano %}{{ item.ano }}{% endif %}</div>
+                    </div>
+                </a>
+                {% endfor %}
+            </div>
+        </section>
+
+        <!-- POPULAR MOVIES -->
+        <section class="chart-section-full" id="popular-movies">
+            <div class="chart-header">
+                <h2>⭐ Filmes Mais Populares</h2>
+                <span class="chart-source">Baseado na popularidade TMDB</span>
+            </div>
+            <div class="catalog-grid">
+                {% for item in charts_data.popular_movies %}
+            <a class="poster-card" href="{{ url_for('tmdb_play', t=item.titulo, id=item.tmdb_id or None, m=item.media_type or 'movie', rd=item.release_date or None, capa=item.capa or None, sinopse=item.sinopse or None) }}">
+                    <div class="poster-rank-num">#{{ loop.index }}</div>
+                    <div class="poster-img">
+                        <img src="{{ item.capa }}" alt="{{ item.titulo }}" loading="lazy"  data-media="movie" onerror="handleImgError(this)">
+                    </div>
+                    {% if item.nota %}
+                    <div class="poster-rating">⭐ {{ item.nota }}</div>
+                    {% endif %}
+                    <div class="poster-overlay">
+                        <div class="poster-play"><svg viewBox="0 0 12 12"><polygon points="2,1 11,6 2,11"/></svg></div>
+                        <div class="poster-title">{{ item.titulo[:30] }}</div>
+                        <div class="poster-sub">{% if item.ano %}{{ item.ano }}{% endif %}</div>
+                    </div>
+                </a>
+                {% endfor %}
+            </div>
+        </section>
+
+        <!-- POPULAR TV -->
+        <section class="chart-section-full" id="popular-tv">
+            <div class="chart-header">
+                <h2>📺 Séries Mais Populares</h2>
+                <span class="chart-source">Baseado na popularidade TMDB</span>
+            </div>
+            <div class="catalog-grid">
+                {% for item in charts_data.popular_tv %}
+            <a class="poster-card" href="{{ url_for('tmdb_play', t=item.titulo, id=item.tmdb_id or None, m=item.media_type or 'movie', rd=item.release_date or None, capa=item.capa or None, sinopse=item.sinopse or None) }}">
+                    <div class="poster-rank-num">#{{ loop.index }}</div>
+                    <div class="poster-img">
+                        <img src="{{ item.capa }}" alt="{{ item.titulo }}" loading="lazy"  data-media="tv" onerror="handleImgError(this)">
+                    </div>
+                    {% if item.nota %}
+                    <div class="poster-rating">⭐ {{ item.nota }}</div>
+                    {% endif %}
+                    <div class="poster-overlay">
+                        <div class="poster-play"><svg viewBox="0 0 12 12"><polygon points="2,1 11,6 2,11"/></svg></div>
+                        <div class="poster-title">{{ item.titulo[:30] }}</div>
+                        <div class="poster-sub">{% if item.ano %}{{ item.ano }}{% endif %}</div>
+                    </div>
+                </a>
+                {% endfor %}
+            </div>
+        </section>
+
+        <!-- TRENDING MOVIES -->
+        <section class="chart-section-full" id="trending-movies">
+            <div class="chart-header">
+                <h2>🔥 Filmes em Alta</h2>
+                <span class="chart-source">Mais procurados esta semana</span>
+            </div>
+            <div class="catalog-grid">
+                {% for item in charts_data.trending_movies %}
+            <a class="poster-card" href="{{ url_for('tmdb_play', t=item.titulo, id=item.tmdb_id or None, m=item.media_type or 'movie', rd=item.release_date or None, capa=item.capa or None, sinopse=item.sinopse or None) }}">
+                    <div class="poster-rank-num">#{{ loop.index }}</div>
+                    <div class="poster-img">
+                        <img src="{{ item.capa }}" alt="{{ item.titulo }}" loading="lazy"  data-media="movie" onerror="handleImgError(this)">
+                    </div>
+                    {% if item.nota %}
+                    <div class="poster-rating">⭐ {{ item.nota }}</div>
+                    {% endif %}
+                    <div class="poster-overlay">
+                        <div class="poster-play"><svg viewBox="0 0 12 12"><polygon points="2,1 11,6 2,11"/></svg></div>
+                        <div class="poster-title">{{ item.titulo[:30] }}</div>
+                        <div class="poster-sub">{% if item.ano %}{{ item.ano }}{% endif %}</div>
+                    </div>
+                </a>
+                {% endfor %}
+            </div>
+        </section>
+
+        <!-- TRENDING TV -->
+        <section class="chart-section-full" id="trending-tv">
+            <div class="chart-header">
+                <h2>📺 Séries em Alta</h2>
+                <span class="chart-source">Mais procuradas esta semana</span>
+            </div>
+            <div class="catalog-grid">
+                {% for item in charts_data.trending_tv %}
+            <a class="poster-card" href="{{ url_for('tmdb_play', t=item.titulo, id=item.tmdb_id or None, m=item.media_type or 'movie', rd=item.release_date or None, capa=item.capa or None, sinopse=item.sinopse or None) }}">
+                    <div class="poster-rank-num">#{{ loop.index }}</div>
+                    <div class="poster-img">
+                        <img src="{{ item.capa }}" alt="{{ item.titulo }}" loading="lazy"  data-media="tv" onerror="handleImgError(this)">
+                    </div>
+                    {% if item.nota %}
+                    <div class="poster-rating">⭐ {{ item.nota }}</div>
+                    {% endif %}
+                    <div class="poster-overlay">
+                        <div class="poster-play"><svg viewBox="0 0 12 12"><polygon points="2,1 11,6 2,11"/></svg></div>
+                        <div class="poster-title">{{ item.titulo[:30] }}</div>
+                        <div class="poster-sub">{% if item.ano %}{{ item.ano }}{% endif %}</div>
+                    </div>
+                </a>
+                {% endfor %}
+            </div>
+        </section>
+    </div>
+</div>
+{% endblock %}

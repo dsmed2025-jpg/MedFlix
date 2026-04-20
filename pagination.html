@@ -1,0 +1,17 @@
+{% if total_pag > 1 %}
+<div class="pagination">
+    {% if pagina > 1 %}
+    <a class="pg-btn" href="{{ build_page_url(pagina - 1) }}">‹</a>
+    {% endif %}
+    {% set start = [pagina - 3, 1]|max %}
+    {% set end   = [pagina + 3, total_pag]|min %}
+    {% if start > 1 %}<a class="pg-btn" href="{{ build_page_url(1) }}">1</a><span style="color:var(--muted)">…</span>{% endif %}
+    {% for p in range(start, end + 1) %}
+    <a class="pg-btn {% if p == pagina %}active{% endif %}" href="{{ build_page_url(p) }}">{{ p }}</a>
+    {% endfor %}
+    {% if end < total_pag %}<span style="color:var(--muted)">…</span><a class="pg-btn" href="{{ build_page_url(total_pag) }}">{{ total_pag }}</a>{% endif %}
+    {% if pagina < total_pag %}
+    <a class="pg-btn" href="{{ build_page_url(pagina + 1) }}">›</a>
+    {% endif %}
+</div>
+{% endif %}

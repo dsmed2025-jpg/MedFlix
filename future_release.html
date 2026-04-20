@@ -1,0 +1,68 @@
+{% extends "base.html" %}
+{% block title %}{{ item.titulo or fallback_title }} | Em Breve{% endblock %}
+
+{% block content %}
+<section class="panel" style="max-width:1100px;margin:1.5rem auto">
+    <div class="page-hero" style="margin-bottom:1rem">
+        <div>
+            <span class="eyebrow">🎬 Em Breve</span>
+            <h1 class="page-title">{{ item.titulo or fallback_title }}</h1>
+            <p class="page-subtitle">Este título ainda não tem arquivo confirmado no servidor. Para evitar reprodução incorreta, o player foi bloqueado até a estreia na plataforma.</p>
+        </div>
+    </div>
+
+    <div style="display:grid;grid-template-columns:minmax(260px,340px) 1fr;gap:1.5rem;align-items:start">
+        <div style="background:var(--surface);border:1px solid var(--border);border-radius:18px;overflow:hidden">
+            {% if item.trailer_key %}
+            <div style="aspect-ratio:16/9;background:#000">
+                <iframe
+                    src="https://www.youtube.com/embed/{{ item.trailer_key }}"
+                    title="Trailer de {{ item.titulo or fallback_title }}"
+                    allow="autoplay; encrypted-media; picture-in-picture"
+                    allowfullscreen
+                    style="width:100%;height:100%;border:0"></iframe>
+            </div>
+            {% elif item.poster %}
+            <img src="{{ item.poster }}" alt="{{ item.titulo or fallback_title }}" style="width:100%;aspect-ratio:2/3;object-fit:cover">
+            {% else %}
+            <div style="aspect-ratio:2/3;display:flex;align-items:center;justify-content:center;background:linear-gradient(160deg,#141421,#1f1f31);font-size:3rem">🎬</div>
+            {% endif %}
+        </div>
+
+        <div style="display:flex;flex-direction:column;gap:1rem">
+            <div class="alert success" style="margin:0">
+                {% if item.release_fmt %}
+                Estreia prevista: <strong>{{ item.release_fmt }}</strong>.
+                {% else %}
+                Estreia prevista: <strong>Em breve</strong>.
+                {% endif %}
+            </div>
+
+            {% if item.sinopse %}
+            <div class="panel compact-panel">
+                <h3 style="margin-top:0">Sinopse</h3>
+                <p style="margin:0;color:var(--soft);line-height:1.7">{{ item.sinopse }}</p>
+            </div>
+            {% endif %}
+
+            <div class="panel compact-panel">
+                <h3 style="margin-top:0">Disponibilidade</h3>
+                <p style="margin:.4rem 0 0;color:var(--soft);line-height:1.7">
+                    O catálogo agora só libera reprodução quando existe um arquivo real e confiável vinculado ao título.
+                    Enquanto isso, você pode assistir ao trailer ou voltar para o catálogo.
+                </p>
+            </div>
+
+            <div class="action-row">
+                {% if item.trailer_key %}
+                <a class="ghost-btn" href="https://www.youtube.com/watch?v={{ item.trailer_key }}" target="_blank" rel="noopener">Abrir trailer no YouTube</a>
+                {% elif item.titulo or fallback_title %}
+                <a class="ghost-btn" href="https://www.youtube.com/results?search_query={{ ((item.titulo or fallback_title) ~ ' trailer')|urlencode }}" target="_blank" rel="noopener">Buscar trailer no YouTube</a>
+                {% endif %}
+                <a class="ghost-btn" href="{{ url_for('explorar', q=item.titulo or fallback_title) }}">Buscar no catálogo</a>
+                <a class="ghost-btn" href="{{ url_for('home') }}">Voltar para a Home</a>
+            </div>
+        </div>
+    </div>
+</section>
+{% endblock %}

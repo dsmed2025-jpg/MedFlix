@@ -1,0 +1,143 @@
+{% extends "base.html" %}
+{% block title %}Busca | Pinguim Filmes{% endblock %}
+
+{% block content %}
+<div class="explorar-page">
+
+  <div class="page-hero" style="padding-bottom:1.5rem">
+    <div>
+      <span class="eyebrow">Catálogo VOD</span>
+      <h1 class="page-title">Buscar Filmes &amp; Séries</h1>
+    </div>
+  </div>
+
+  <form class="filter-bar" method="get" id="search-form">
+    <input type="search" name="q" id="q"
+           placeholder="🔍 Digite um título..."
+           value="{{ busca }}" autofocus autocomplete="off">
+    <select name="genero" onchange="this.form.submit()">
+      <option value="">Todas as categorias</option>
+      {% set vod_cats = ['Filmes','Seriado','Comédia','Ação','Terror','Animações','Família','Documentários','Medicina','Marvel','Disney','HBO','Prime','Netflix','Stand Up Commedy','GamePlay'] %}
+      {% for nome in vod_cats %}
+      <option value="{{ nome }}" {% if categoria == nome %}selected{% endif %}>{{ nome }}</option>
+      {% endfor %}
+    </select>
+    <button class="primary-btn" type="submit">Buscar</button>
+  </form>
+
+  {% if busca or categoria %}
+  <div class="results-meta" style="margin-bottom:1.5rem">
+    <span>
+      <b>{{ total }}</b> resultado{% if total != 1 %}s{% endif %}
+      {% if busca %} para "<em>{{ busca }}</em>"{% endif %}
+      {% if categoria %} em <em>{{ categoria }}</em>{% endif %}
+    </span>
+    <a href="{{ url_for('explorar') }}" style="color:var(--accent);margin-left:12px;font-size:.85rem">✕ Limpar</a>
+  </div>
+  {% endif %}
+
+  {% if itens %}
+  <div class="catalog-grid" id="results-grid">
+    {% for item in itens %}
+      {% set titulo  = item['titulo'] or '' %}
+      {% set capa    = item['capa']   or '' %}
+      {% set is_serie = titulo in series_set %}
+      {% set capa_ok  = capa and 'lgfp.one' not in capa and 'picsum' not in capa and capa != '' %}
+
+      {% if is_serie %}
+      <a class="poster-card" href="{{ url_for('serie', nome_serie=titulo) }}">
+        <div class="poster-rank-num">📺</div>
+        <div class="poster-img">
+          <img src="{{ capa if capa_ok else '' }}"
+               alt="{{ titulo }}"
+               loading="lazy"
+               data-titulo="{{ titulo|e }}"
+               data-media="tv"
+               onerror="handleImgError(this)">
+        </div>
+        <div class="search-serie-badge">{{ item['ep_count'] }} ep.</div>
+        <div class="poster-overlay">
+          <div class="poster-play"><svg viewBox="0 0 12 12"><polygon points="2,1 11,6 2,11"/></svg></div>
+          <div class="poster-title">{{ titulo[:28] }}</div>
+          <div class="poster-sub">📺 {{ item['genero'] }} · {{ item['ep_count'] }} ep.</div>
+        </div>
+      </a>
+      {% else %}
+      <a class="poster-card" href="{{ url_for('assistir', id_filme=item['id']) }}">
+        <div class="poster-rank-num">🎬</div>
+        <div class="poster-img">
+          <img src="{{ capa if capa_ok else '' }}"
+               alt="{{ titulo }}"
+               loading="lazy"
+               data-titulo="{{ titulo|e }}"
+               data-media="movie"
+               onerror="handleImgError(this)">
+        </div>
+        {% if item['ano'] and item['ano'] > 1900 %}
+        <div class="poster-rating">{{ item['ano'] }}</div>
+        {% endif %}
+        <div class="poster-overlay">
+          <div class="poster-play"><svg viewBox="0 0 12 12"><polygon points="2,1 11,6 2,11"/></svg></div>
+          <div class="poster-title">{{ titulo[:28] }}</div>
+          <div class="poster-sub">{{ item['genero'] or '' }}</div>
+        </div>
+      </a>
+      {% endif %}
+    {% endfor %}
+  </div>
+
+  {% include "pagination.html" %}
+
+  {% elif busca or categoria %}
+  <div class="empty-state" style="padding:4rem 0;text-align:center">
+    <div style="font-size:3rem;margin-bottom:1rem">🔍</div>
+    <h3>Nenhum resultado para "{{ busca }}"</h3>
+    <p style="color:var(--muted);margin-top:.5rem">Tente outro termo ou outra categoria.</p>
+    <a href="{{ url_for('explorar') }}" class="primary-btn" style="display:inline-block;margin-top:1.5rem">Nova busca</a>
+  </div>
+
+  {% else %}
+  <div style="text-align:center;padding:3rem 0;color:var(--muted)">
+    <div style="font-size:3.5rem;margin-bottom:1rem">🎬</div>
+    <p style="font-size:1.1rem">Digite um título para buscar no catálogo</p>
+    <p style="font-size:.85rem;margin-top:.4rem">Séries agrupadas · Filmes sem duplicatas · Canais excluídos</p>
+  </div>
+  {% endif %}
+
+</div>
+
+<style>
+.search-serie-badge {
+  position: absolute; bottom: 40px; left: 8px;
+  background: rgba(91,140,255,.92); color: #fff;
+  font-size: .62rem; font-weight: 700;
+  padding: 2px 7px; border-radius: 4px; z-index: 3;
+}
+</style>
+
+<script>
+// Search results: trigger cover loading immediately (no lazy delay)
+(function() {
+  function fixSearchCovers() {
+    var grid = document.getElementById('results-grid');
+    if (!grid) return;
+    grid.querySelectorAll('img[data-titulo]').forEach(function(img) {
+      var src = img.getAttribute('src') || '';
+      var dead = !src || src === '' || src.indexOf('lgfp.one') !== -1 || src.indexOf('picsum') !== -1;
+      if (dead) {
+        img.removeAttribute('src');
+        handleImgError(img);       // immediate — user already sees the grid
+      } else {
+        img.style.opacity = '1';
+        img.addEventListener('error', function(){ handleImgError(this); }, {once:true});
+      }
+    });
+  }
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', fixSearchCovers);
+  } else {
+    setTimeout(fixSearchCovers, 0); // ensure base.html handleImgError is defined
+  }
+})();
+</script>
+{% endblock %}

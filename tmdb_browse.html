@@ -1,0 +1,60 @@
+{% extends "base.html" %}
+
+{% block title %}{{ current_cat_info.title }} | Pinguim Filmes TMDB{% endblock %}
+
+{% block content %}
+<section class="panel">
+    <div class="page-hero">
+        <div>
+            <span class="eyebrow">{{ current_cat_info.icon }} TMDB</span>
+            <h1>{{ current_cat_info.title }}</h1>
+        </div>
+        <form class="filter-bar" method="get">
+            <input type="search" name="q" placeholder="Buscar filme ou série..." value="{{ search_query }}">
+            <button class="primary-btn" type="submit">Buscar</button>
+        </form>
+    </div>
+
+    <div class="cat-pills-section">
+        <div class="cat-pills-label">Categorias TMDB</div>
+        <div class="cat-pills">
+            {% for cat_key, cat_info in categories.items() %}
+            <a class="cat-pill {% if cat_key == current_cat %}active{% endif %}" 
+               href="{{ url_for('tmdb_browse', cat=cat_key) }}">
+                {{ cat_info.icon }} {{ cat_info.title }}
+            </a>
+            {% endfor %}
+        </div>
+    </div>
+
+    <div class="results-meta">
+        <span>{{ items|length }} títulos{% if search_query %} para "{{ search_query }}"{% endif %}</span>
+        {% if search_query %}
+        <a href="{{ url_for('tmdb_browse', cat=current_cat) }}">Limpar busca</a>
+        {% endif %}
+    </div>
+
+    <div class="catalog-grid">
+        {% for item in items %}
+        <a class="media-card vertical" href="{{ url_for('explorar') }}?q={{ item.titulo|urlencode }}">
+            <div class="media-thumb">
+                <img src="{{ item.capa }}" alt="{{ item.titulo }}" loading="lazy" onerror="this.parentElement.innerHTML='<div class=\'poster-no-img\'><span class=\'pni-icon\'>🎬</span><span class=\'pni-title\'>{{ item.titulo[:20] }}</span></div>'">
+                {% if item.nota %}
+                <span class="poster-rating">⭐ {{ item.nota }}</span>
+                {% endif %}
+                <span class="pill">{{ item.genero }}</span>
+            </div>
+            <div class="media-body">
+                <strong>{{ item.titulo }}</strong>
+                <span>{% if item.ano %}{{ item.ano }}{% endif %}</span>
+            </div>
+        </a>
+        {% else %}
+        <div class="empty-state">
+            <h3>Nenhum resultado encontrado</h3>
+            <p>Tente outra categoria ou termo de busca.</p>
+        </div>
+        {% endfor %}
+    </div>
+</section>
+{% endblock %}

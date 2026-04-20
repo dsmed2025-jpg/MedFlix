@@ -1,0 +1,431 @@
+{% extends "base.html" %}
+{% block title %}{{ filme.titulo }} | Pinguim TV{% endblock %}
+
+{% block content %}
+<section class="watch-layout watch-tv"
+    data-current-media-id="{{ filme.id }}"
+    data-current-media-title="{{ filme.titulo }}"
+    data-current-media-cover="{{ resolved_cover or filme.capa }}"
+    data-current-media-serie-cover="{{ series_cover }}"
+    data-current-media-genre="{{ filme.genero }}"
+    data-current-media-subgrupo="{{ filme.subgrupo or '' }}">
+
+    <div class="watch-main">
+        <div class="player-shell tv-player">
+            <div class="player-actions-float">
+                {% if prev_item %}
+                <a class="round-btn" href="{{ url_for('assistir', id_filme=prev_item.id) }}" title="Episódio anterior">‹</a>
+                {% endif %}
+                <button class="round-btn favorite-toggle" type="button"
+                    data-media-id="{{ filme.id }}"
+                    data-media-title="{{ filme.titulo }}"
+                    data-media-cover="{{ filme.capa }}"
+                    data-media-genre="{{ filme.genero }}"
+                    data-media-url="{{ url_for('assistir', id_filme=filme.id) }}"
+                    aria-pressed="false" title="Favoritar">★</button>
+                {% if next_item %}
+                <a class="round-btn round-btn-next" href="{{ url_for('assistir', id_filme=next_item.id) }}" title="Próximo episódio">›</a>
+                {% endif %}
+            </div>
+
+            {% if next_item %}
+            {# Banner de autoplay com timer de 20 segundos #}
+            <div id="next-ep-banner" class="next-ep-banner" style="display:none">
+                <div class="next-ep-info">
+                    <span class="next-ep-label">Próximo episódio</span>
+                    <strong class="next-ep-title">{{ next_item.titulo[:40] }}</strong>
+                </div>
+                <div class="next-ep-right">
+                    <div class="next-ep-timer-ring">
+                        <svg viewBox="0 0 44 44" class="timer-svg">
+                            <circle cx="22" cy="22" r="18" fill="none" stroke="rgba(255,255,255,.15)" stroke-width="3"/>
+                            <circle cx="22" cy="22" r="18" fill="none" stroke="#e50914" stroke-width="3"
+                                    stroke-dasharray="113" stroke-dashoffset="0"
+                                    id="timer-circle" stroke-linecap="round"
+                                    transform="rotate(-90 22 22)"/>
+                        </svg>
+                        <span id="next-ep-countdown" class="timer-number">20</span>
+                    </div>
+                    <a href="{{ url_for('assistir', id_filme=next_item.id) }}" class="next-ep-btn" id="next-ep-go">
+                        ▶ Próximo
+                    </a>
+                    <button class="next-ep-cancel" onclick="cancelNextEp()">✕</button>
+                </div>
+            </div>
+            {% endif %}
+
+            {# ── Loading overlay ── #}
+            <div id="player-loading" class="player-loading-overlay">
+                <div class="player-spinner"></div>
+                <span>Carregando stream...</span>
+            </div>
+
+            {% if player.mode == "iframe" %}
+            <div class="embed-shell">
+                <iframe
+                    src="{{ player.embed_url }}"
+                    title="{{ filme.titulo }}"
+                    allow="autoplay; encrypted-media; picture-in-picture"
+                    allowfullscreen loading="eager"></iframe>
+            </div>
+            {% else %}
+            <video id="player" controls autoplay preload="metadata"
+                   poster="{{ filme.capa }}" playsinline>
+                <source src="{{ player.proxy_url or player.direct_url }}" type="{{ player.mime }}">
+                Seu navegador não suporta vídeo HTML5.
+            </video>
+            {% endif %}
+        </div>
+        {# ── Player progress bar (only for video mode) ── #}
+        {% if player.mode == "video" %}
+        <div class="player-progress-wrap">
+            <div class="player-progress-track" id="player-progress-track"></div>
+        </div>
+        {% endif %}
+
+        <div class="watch-meta panel compact-panel">
+            <div class="tag-row">
+                <span class="pill accent">{{ cfg.icon }} {{ filme.genero }}</span>
+                {% if filme.subgrupo and filme.subgrupo != filme.titulo %}
+                <span class="pill accent">{{ filme.subgrupo }}</span>
+                {% endif %}
+                {% if ep_num %}
+                <span class="pill accent">Ep. {{ '%02d'|format(ep_num) }}</span>
+                {% endif %}
+                <span class="pill accent">{{ player.label }}</span>
+            </div>
+            <h1 class="page-title">{{ filme.titulo }}</h1>
+            {% if filme.sinopse %}
+            <p class="page-subtitle">{{ filme.sinopse }}</p>
+            {% else %}
+            <p class="page-subtitle">Player otimizado com proxy local, suporte a HLS e navegação por episódios.</p>
+            {% endif %}
+
+            {# Stream status (updated by JS) #}
+            <div id="stream-status" class="alert">
+                Fonte detectada: <strong>{{ player.label }}</strong>.
+                {% if player.is_live %}
+                Stream ao vivo — o player usa proxy para compatibilidade com HLS.
+                {% else %}
+                Clique em reproduzir para iniciar.
+                {% endif %}
+            </div>
+            {% if player.is_live %}
+            <div id="stream-diagnosis" class="alert" style="display:none;margin-top:.7rem"></div>
+            {% endif %}
+
+            <div class="action-row">
+                {% if filme.subgrupo and filme.genero in ('Seriado','Medicina') %}
+                <a class="ghost-btn" href="/serie/{{ filme.subgrupo|urlencode }}">← Episódios</a>
+                {% else %}
+                <a class="ghost-btn" href="{{ url_for('secao', categoria=filme.genero) }}">← Voltar</a>
+                {% endif %}
+                <a class="ghost-btn" href="{{ url_for('explorar', q=filme.subgrupo or filme.titulo) }}">Ver semelhantes</a>
+                <a class="ghost-btn" href="{{ player.direct_url }}" target="_blank" rel="noopener noreferrer" id="btn-direct">Abrir original</a>
+            </div>
+        </div>
+    </div>
+
+    <aside class="watch-sidebar tv-sidebar-right">
+        <div class="sidebar-head">
+            <span class="eyebrow">
+                {% if proximos %}{{ filme.subgrupo or 'Episódios' }}{% else %}{{ filme.genero }}{% endif %}
+            </span>
+            <h3>
+                {% if proximos %}{{ proximos|length + 1 }} episódios
+                {% else %}Relacionados{% endif %}
+            </h3>
+        </div>
+        <div class="sidebar-list">
+            <a class="sidebar-card active-line" href="#">
+                <img src="{{ filme.capa }}" alt="{{ filme.titulo }}" loading="lazy"
+                     onerror="this.src='https://picsum.photos/seed/{{ filme.id }}/320/180'">
+                <div>
+                    <strong>{% if ep_num %}Ep. {{ '%02d'|format(ep_num) }} — {% endif %}{{ filme.titulo }}</strong>
+                    <span>▶ Assistindo agora</span>
+                </div>
+            </a>
+            {% for item in proximos %}
+            {% set item_ep = extract_episode_number(item.titulo) %}
+            <a class="sidebar-card" href="{{ url_for('assistir', id_filme=item.id) }}">
+                <img src="{{ item.capa }}" alt="{{ item.titulo }}" loading="lazy"
+                     onerror="this.src='https://picsum.photos/seed/{{ item.id }}/320/180'">
+                <div>
+                    <strong>{% if item_ep %}Ep. {{ '%02d'|format(item_ep) }} — {% endif %}{{ item.titulo }}</strong>
+                    <span>{{ item.subgrupo or item.genero }}</span>
+                </div>
+            </a>
+            {% endfor %}
+        </div>
+    </aside>
+</section>
+
+{% if player.is_live %}
+<style>
+.live-badge{position:fixed;top:70px;right:1.2rem;background:#e50914;color:#fff;font-size:.7rem;font-weight:700;letter-spacing:.12em;padding:.3rem .7rem;border-radius:20px;z-index:999;display:flex;align-items:center;gap:.4rem}
+.live-dot{width:7px;height:7px;background:#fff;border-radius:50%;animation:pulse 1.2s ease infinite}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.3}}
+</style>
+<div class="live-badge"><span class="live-dot"></span> AO VIVO</div>
+{% endif %}
+
+<style>
+.player-loading-overlay{position:absolute;inset:0;background:rgba(0,0,0,.6);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;border-radius:16px;z-index:10;transition:opacity .4s}
+.player-loading-overlay.hidden{opacity:0;pointer-events:none}
+.player-spinner{width:40px;height:40px;border:3px solid rgba(255,255,255,.15);border-top-color:#e50914;border-radius:50%;animation:spin .8s linear infinite}
+.player-loading-overlay span{color:rgba(255,255,255,.7);font-size:.85rem}
+@keyframes spin{to{transform:rotate(360deg)}}
+/* Player progress bar (below video) */
+.player-progress-wrap{margin-top:.5rem;height:3px;background:rgba(255,255,255,.1);border-radius:3px;overflow:hidden}
+.player-progress-track{height:100%;background:#e50914;width:0%;transition:width 1s linear}
+</style>
+
+{% if player.mode == "video" %}
+<script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
+<script src="https://cdn.dashjs.org/latest/dash.all.min.js"></script>
+<script>
+(function() {
+    const video      = document.getElementById('player');
+    const loading    = document.getElementById('player-loading');
+    const statusEl   = document.getElementById('stream-status');
+    const diagnosisEl = document.getElementById('stream-diagnosis');
+    const proxyUrl   = {{ (player.proxy_url)|tojson }};
+    const directUrl  = {{ player.direct_url|tojson }};
+    const isHls      = {{ 'true' if player.is_hls else 'false' }};
+    const isTs       = {{ 'true' if player.is_ts else 'false' }};
+    const isDash     = {{ 'true' if player.is_dash else 'false' }};
+    let hlsInstance  = null;
+    let dashInstance = null;
+
+    function hideLoading() {
+        if (loading) loading.classList.add('hidden');
+    }
+
+    function setStatus(msg, type) {
+        if (!statusEl) return;
+        statusEl.textContent = msg;
+        statusEl.className = 'alert ' + (type || '');
+    }
+
+    function setDiagnosis(msg, type) {
+        if (!diagnosisEl) return;
+        diagnosisEl.style.display = 'block';
+        diagnosisEl.textContent = msg;
+        diagnosisEl.className = 'alert ' + (type || '');
+    }
+
+    function destroyHls() {
+        if (hlsInstance) { hlsInstance.destroy(); hlsInstance = null; }
+    }
+
+    function destroyDash() {
+        if (dashInstance) { dashInstance.reset(); dashInstance = null; }
+    }
+
+    function tryDirect(src) {
+        destroyHls();
+        destroyDash();
+        video.src = src;
+        video.onerror = function() {
+            if (src !== directUrl) {
+                setStatus('Proxy falhou. Tentando link original...', 'error');
+                video.src = directUrl;
+            } else {
+                setStatus('Não foi possível reproduzir este stream.', 'error');
+                hideLoading();
+                runDiagnosis();
+            }
+        };
+        video.play().catch(function(){});
+    }
+
+    function tryHls(src) {
+        destroyHls();
+        destroyDash();
+        // Safari: suporte nativo a HLS
+        if (video.canPlayType('application/vnd.apple.mpegurl')) {
+            video.src = src;
+            video.addEventListener('loadedmetadata', hideLoading, { once: true });
+            video.play().catch(function(){});
+            setStatus('Stream HLS — reprodução nativa (Safari).', 'success');
+            return;
+        }
+        // Chrome/Firefox/Edge: usa HLS.js
+        if (window.Hls && Hls.isSupported()) {
+            hlsInstance = new Hls({
+                enableWorker: true,
+                lowLatencyMode: true,
+                backBufferLength: 90,
+                maxBufferLength: 30,
+            });
+
+            hlsInstance.on(Hls.Events.MANIFEST_PARSED, function(event, data) {
+                hideLoading();
+                setStatus('Stream HLS carregado — ' + data.levels.length + ' qualidade(s) disponível.', 'success');
+                video.play().catch(function(){});
+            });
+
+            hlsInstance.on(Hls.Events.ERROR, function(event, data) {
+                if (data.fatal) {
+                    if (data.type === Hls.ErrorTypes.NETWORK_ERROR && src !== directUrl) {
+                        setStatus('Proxy indisponível. Tentando link direto...', '');
+                        tryHls(directUrl);
+                    } else {
+                        setStatus('Erro fatal no stream HLS. Tente recarregar.', 'error');
+                        hideLoading();
+                        runDiagnosis();
+                    }
+                }
+            });
+
+            hlsInstance.loadSource(src);
+            hlsInstance.attachMedia(video);
+        } else {
+            // Fallback: tenta como <source> nativo
+            video.src = src;
+            video.addEventListener('loadedmetadata', hideLoading, { once: true });
+            video.play().catch(function(){});
+        }
+    }
+
+    function tryDash(src) {
+        destroyHls();
+        destroyDash();
+        if (!(window.dashjs && dashjs.MediaPlayer)) {
+            setStatus('O navegador não carregou o suporte DASH.', 'error');
+            hideLoading();
+            runDiagnosis();
+            return;
+        }
+        dashInstance = dashjs.MediaPlayer().create();
+        dashInstance.initialize(video, src, true);
+        dashInstance.on(dashjs.MediaPlayer.events.STREAM_INITIALIZED, function() {
+            hideLoading();
+            setStatus('Stream DASH carregado com sucesso.', 'success');
+        });
+        dashInstance.on(dashjs.MediaPlayer.events.ERROR, function() {
+            setStatus('Falha ao carregar o manifesto DASH.', 'error');
+            hideLoading();
+            runDiagnosis();
+        });
+    }
+
+    function runDiagnosis() {
+        if (!diagnosisEl) return;
+        if (diagnosisEl.dataset.loaded === '1') return;
+        diagnosisEl.dataset.loaded = '1';
+        setDiagnosis('Diagnóstico do canal em andamento...', '');
+        fetch('/api/stream-diagnose/{{ filme.id }}')
+            .then(function(r){ return r.json(); })
+            .then(function(data) {
+                if (!data || data.error) {
+                    setDiagnosis('Não foi possível diagnosticar a origem do canal.', 'error');
+                    return;
+                }
+                var parts = [];
+                if (data.http_status) parts.push('HTTP ' + data.http_status);
+                if (data.protocol) parts.push('protocolo ' + data.protocol.toUpperCase());
+                if (data.content_type) parts.push(data.content_type);
+                var summary = data.detail || 'Origem verificada.';
+                if (parts.length) summary += ' [' + parts.join(' · ') + ']';
+                if (data.recommendation) summary += ' ' + data.recommendation;
+                setDiagnosis(summary, data.ok ? 'success' : 'error');
+            })
+            .catch(function() {
+                diagnosisEl.dataset.loaded = '0';
+                setDiagnosis('Falha ao consultar o diagnóstico da origem.', 'error');
+            });
+    }
+
+    const progressTrack = document.getElementById('player-progress-track');
+    function updateProgressTrack() {
+        if (progressTrack && video.duration > 0) {
+            progressTrack.style.width = ((video.currentTime / video.duration) * 100).toFixed(1) + '%';
+        }
+    }
+
+    if (video) {
+        video.addEventListener('playing', hideLoading, { once: true });
+        video.addEventListener('timeupdate', updateProgressTrack);
+        video.addEventListener('error', function() {
+            setStatus('Erro ao carregar stream. Verifique a fonte.', 'error');
+            hideLoading();
+            runDiagnosis();
+        });
+
+        {% if next_item %}
+        /* ── Timer de 20s ao final do episódio ── */
+        var _nextTimer = null;
+        var _nextCancelled = false;
+
+        window.cancelNextEp = function() {
+            _nextCancelled = true;
+            if (_nextTimer) clearInterval(_nextTimer);
+            var b = document.getElementById('next-ep-banner');
+            if (b) { b.classList.add('next-ep-hide'); setTimeout(function(){ b.style.display='none'; }, 400); }
+        };
+
+        function startNextEpTimer() {
+            if (_nextCancelled) return;
+            var banner = document.getElementById('next-ep-banner');
+            var countEl = document.getElementById('next-ep-countdown');
+            var circle  = document.getElementById('timer-circle');
+            var totalDash = 113;
+            if (!banner) return;
+            banner.style.display = 'flex';
+            banner.classList.remove('next-ep-hide');
+            var count = 20;
+            if (countEl) countEl.textContent = count;
+            if (circle)  circle.style.strokeDashoffset = 0;
+
+            _nextTimer = setInterval(function() {
+                if (_nextCancelled) { clearInterval(_nextTimer); return; }
+                count--;
+                if (countEl) countEl.textContent = count;
+                if (circle) {
+                    var offset = totalDash * (1 - count / 20);
+                    circle.style.strokeDashoffset = offset;
+                }
+                if (count <= 0) {
+                    clearInterval(_nextTimer);
+                    window.location.href = "{{ url_for('assistir', id_filme=next_item.id) }}";
+                }
+            }, 1000);
+        }
+
+        video.addEventListener('ended', function() { startNextEpTimer(); });
+        video.addEventListener('timeupdate', function() {
+            if (video.duration > 0 && (video.currentTime / video.duration) >= 0.98 && !_nextCancelled) {
+                // show banner 2% before end
+                var b = document.getElementById('next-ep-banner');
+                if (b && b.style.display === 'none' && !_nextTimer) startNextEpTimer();
+            }
+        });
+        {% endif %}
+
+        if (isHls) {
+            tryHls(proxyUrl || directUrl);
+        } else if (isDash) {
+            setStatus('Stream DASH detectado — tentando manifesto direto.', '');
+            tryDash(directUrl || proxyUrl);
+        } else if (isTs) {
+            setStatus('Stream TS — reproduzindo via proxy.', '');
+            tryDirect(proxyUrl || directUrl);
+        } else {
+            // MP4 e outros: <source> já está no HTML, apenas esconde o loader ao jogar
+            video.addEventListener('loadedmetadata', hideLoading, { once: true });
+            video.addEventListener('loadeddata', hideLoading, { once: true });
+        }
+
+        if (isHls || isTs || isDash) {
+            runDiagnosis();
+        }
+    }
+})();
+</script>
+{% else %}
+<script>
+document.getElementById('player-loading')?.classList.add('hidden');
+</script>
+{% endif %}
+{% endblock %}

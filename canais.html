@@ -1,0 +1,106 @@
+{% extends "base.html" %}
+{% block title %}📡 Canais Ao Vivo | Pinguim Filmes{% endblock %}
+
+{% macro canal_card(item) -%}
+<a class="canal-card" href="{{ url_for('assistir', id_filme=item.id) }}"
+   data-nome="{{ item.titulo_limpo|lower }}"
+   data-categoria="{{ item.canal_categoria|lower }}">
+    <div class="canal-thumb">
+        {% if item.capa and 'lgfp.one' not in item.capa and item.capa != '' %}
+        <img src="{{ item.capa }}" alt="{{ item.titulo_limpo }}" loading="lazy"
+             onerror="this.style.display='none';this.nextElementSibling.style.display='flex'">
+        <div class="canal-no-img" style="display:none">📡</div>
+        {% else %}
+        <div class="canal-no-img">📡</div>
+        {% endif %}
+        <span class="canal-live-badge">AO VIVO</span>
+        {% if item.quality_score >= 300 %}
+        <span class="canal-quality-badge">FHD</span>
+        {% elif item.quality_score >= 200 %}
+        <span class="canal-quality-badge">HD</span>
+        {% endif %}
+    </div>
+    <div class="canal-info">
+        <div class="canal-name" title="{{ item.titulo_limpo }}">{{ item.titulo_limpo }}</div>
+        <div class="canal-meta">{{ item.canal_categoria }}</div>
+    </div>
+</a>
+{%- endmacro %}
+
+{% block content %}
+<div class="canais-page">
+    <div class="canais-header">
+        <h1>📡 Canais Ao Vivo</h1>
+        <span class="canais-badge">🔴 CURADORIA</span>
+        <span style="color:#888;font-size:.9rem">{{ total }} canais visíveis</span>
+        <form method="get" style="margin-left:auto">
+            <input class="canais-search" type="search" name="q"
+                   placeholder="🔍 Buscar canal..."
+                   value="{{ busca }}"
+                   oninput="filterCanais(this.value)">
+        </form>
+    </div>
+
+    {% if curated_sections and not busca %}
+    <div class="curated-canais">
+        {% for section_name, section_items in curated_sections.items() %}
+        {% if section_items %}
+        <section class="shelf">
+            <div class="shelf-head">
+                <h2>{{ section_name }}</h2>
+                <span class="shelf-source">{{ section_items|length }} destaques</span>
+            </div>
+            <div class="canais-grid canais-grid-curated">
+                {% for item in section_items %}
+                {{ canal_card(item) }}
+                {% endfor %}
+            </div>
+        </section>
+        {% endif %}
+        {% endfor %}
+    </div>
+    {% endif %}
+
+    {% if itens %}
+    <div class="results-meta" style="margin:1rem 0">
+        <span>Lista filtrada de canais relevantes</span>
+    </div>
+    <div class="canais-grid" id="canais-grid">
+        {% for item in itens %}
+        {{ canal_card(item) }}
+        {% endfor %}
+    </div>
+
+    {% if total_pag > 1 %}
+    <div style="display:flex;justify-content:center;gap:.5rem;margin-top:2rem;flex-wrap:wrap">
+        {% if pagina > 1 %}
+        <a href="?p={{ pagina-1 }}{% if busca %}&q={{ busca }}{% endif %}"
+           style="padding:.5rem 1rem;background:#1a1a2e;border:1px solid #2a2a4e;border-radius:8px;color:#e0e0e0;text-decoration:none">← Anterior</a>
+        {% endif %}
+        <span style="padding:.5rem 1rem;color:#888">{{ pagina }} / {{ total_pag }}</span>
+        {% if pagina < total_pag %}
+        <a href="?p={{ pagina+1 }}{% if busca %}&q={{ busca }}{% endif %}"
+           style="padding:.5rem 1rem;background:#1a1a2e;border:1px solid #2a2a4e;border-radius:8px;color:#e0e0e0;text-decoration:none">Próxima →</a>
+        {% endif %}
+    </div>
+    {% endif %}
+
+    {% else %}
+    <div style="text-align:center;padding:4rem;color:#666">
+        <div style="font-size:3rem;margin-bottom:1rem">📡</div>
+        <h3>Nenhum canal encontrado</h3>
+        <p>Tente outro termo de busca.</p>
+    </div>
+    {% endif %}
+</div>
+
+<script>
+function filterCanais(q) {
+    const term = q.toLowerCase().trim();
+    document.querySelectorAll('.canal-card').forEach(function(card) {
+        const nome = card.dataset.nome || '';
+        card.style.display = (!term || nome.includes(term)) ? '' : 'none';
+    });
+}
+</script>
+{% endblock %}

@@ -1,0 +1,137 @@
+{% extends "base.html" %}
+{% block title %}{{ nome_serie }} — Pinguim Filmes{% endblock %}
+
+{% block content %}
+<style>
+/* ── Serie hero ── */
+.serie-hero{position:relative;min-height:340px;display:flex;align-items:flex-end;padding:2rem 2rem 2rem;overflow:hidden;border-bottom:1px solid rgba(255,255,255,.08)}
+.serie-backdrop{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;object-position:center top}
+.serie-backdrop-overlay{position:absolute;inset:0;background:linear-gradient(90deg,rgba(0,0,0,.96) 0%,rgba(0,0,0,.7) 55%,rgba(0,0,0,.35) 100%),linear-gradient(0deg,rgba(0,0,0,.9) 0%,transparent 60%)}
+.serie-hero-content{position:relative;z-index:1;display:flex;gap:1.8rem;align-items:flex-end;max-width:900px}
+.serie-poster{width:130px;flex-shrink:0;aspect-ratio:2/3;border-radius:12px;overflow:hidden;box-shadow:0 12px 40px rgba(0,0,0,.7);border:1px solid rgba(255,255,255,.12)}
+.serie-poster img{width:100%;height:100%;object-fit:cover;display:block}
+.serie-info{flex:1}
+.serie-breadcrumb{font-size:.72rem;color:rgba(255,255,255,.45);margin-bottom:.5rem;letter-spacing:.06em}
+.serie-breadcrumb a{color:rgba(255,255,255,.45);text-decoration:none;transition:color .15s}
+.serie-breadcrumb a:hover{color:rgba(255,255,255,.8)}
+.serie-title{font-family:"Bebas Neue",sans-serif;font-size:clamp(2rem,5vw,3.2rem);letter-spacing:.04em;line-height:1;margin:0 0 .6rem;color:#fff}
+.serie-tags{display:flex;gap:.5rem;flex-wrap:wrap;margin-bottom:.8rem}
+.s-tag{border-radius:5px;padding:.22rem .65rem;font-size:.68rem;letter-spacing:.08em;text-transform:uppercase;font-weight:600}
+.s-tag-acc{color:#fff}
+.s-tag-out{background:transparent;border:1px solid rgba(255,255,255,.2);color:rgba(255,255,255,.6)}
+.serie-sinopse{font-size:.85rem;color:rgba(255,255,255,.6);line-height:1.6;max-width:600px;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}
+
+/* ── Temporadas ── */
+.temporadas-wrap{max-width:1160px;margin:0 auto;padding:1.5rem 2rem 3rem}
+.temp-section{margin-bottom:1.5rem}
+.temp-header{display:flex;align-items:center;gap:.8rem;padding:.7rem 0;border-bottom:2px solid rgba(255,255,255,.08);cursor:pointer;user-select:none}
+.temp-header:hover .temp-title{color:#fff}
+.temp-num-badge{width:32px;height:32px;border-radius:8px;display:flex;align-items:center;justify-content:center;font-family:"Bebas Neue",sans-serif;font-size:.9rem;letter-spacing:.05em;flex-shrink:0}
+.temp-title{font-family:"Bebas Neue",sans-serif;font-size:1.15rem;letter-spacing:.04em;color:rgba(255,255,255,.85);transition:color .15s}
+.temp-count{font-size:.72rem;color:rgba(255,255,255,.4);margin-left:.2rem}
+.temp-chevron{margin-left:auto;color:rgba(255,255,255,.35);font-size:1rem;transition:transform .22s}
+.temp-section.open .temp-chevron{transform:rotate(90deg)}
+
+/* Episode list */
+.ep-list{display:none;flex-direction:column;gap:2px;margin-top:.5rem}
+.temp-section.open .ep-list{display:flex}
+.ep-row{display:grid;grid-template-columns:44px 1fr auto;align-items:center;gap:12px;padding:.65rem .5rem;border-radius:8px;text-decoration:none;transition:background .15s}
+.ep-row:hover{background:rgba(255,255,255,.06)}
+.ep-row:hover .ep-row-title{color:#fff}
+.ep-num-cell{font-family:"Bebas Neue",sans-serif;font-size:1.1rem;color:rgba(255,255,255,.25);text-align:center;letter-spacing:.04em}
+.ep-row-meta{display:flex;flex-direction:column;gap:2px}
+.ep-row-title{font-size:.88rem;font-weight:500;color:rgba(255,255,255,.8);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;transition:color .15s}
+.ep-row-sub{font-size:.72rem;color:rgba(255,255,255,.35)}
+.ep-play-btn{width:32px;height:32px;border-radius:50%;background:rgba(229,9,20,.0);border:1px solid rgba(255,255,255,.12);display:flex;align-items:center;justify-content:center;flex-shrink:0;transition:background .15s,border-color .15s}
+.ep-row:hover .ep-play-btn{background:rgba(229,9,20,.85);border-color:transparent}
+.ep-play-btn svg{width:11px;height:11px;fill:#fff;margin-left:2px}
+</style>
+
+<!-- HERO -->
+<div class="serie-hero">
+  {% if backdrop %}
+  <img class="serie-backdrop" src="{{ backdrop }}" alt="{{ nome_serie }}" onerror="this.style.display='none'">
+  {% endif %}
+  <div class="serie-backdrop-overlay"></div>
+  <div class="serie-hero-content">
+    <div class="serie-poster">
+      <img src="{{ capa }}" alt="{{ nome_serie }}"
+           onerror="handleImgError(this)">
+    </div>
+    <div class="serie-info">
+      <div class="serie-breadcrumb">
+        <a href="/home">Início</a> › <a href="/secao/{{ genero }}">{{ cfg.icon }} {{ genero }}</a> › {{ nome_serie }}
+      </div>
+      <h1 class="serie-title">{{ nome_serie }}</h1>
+      <div class="serie-tags">
+        <span class="s-tag s-tag-acc" style="background:{{ cfg.cor }}">{{ cfg.icon }} {{ genero }}</span>
+        {% if ano %}<span class="s-tag s-tag-out">{{ ano }}</span>{% endif %}
+        <span class="s-tag s-tag-out">{{ temporadas|length }} temporada{% if temporadas|length != 1 %}s{% endif %}</span>
+        <span class="s-tag s-tag-out">{{ episodios|length }} episódios</span>
+      </div>
+      {% if sinopse %}
+      <p class="serie-sinopse">{{ sinopse }}</p>
+      {% endif %}
+    </div>
+  </div>
+</div>
+
+<!-- TEMPORADAS -->
+<div class="temporadas-wrap">
+  {% for season_num, eps in temporadas %}
+  {% set loop_idx = loop.index %}
+  <div class="temp-section {% if loop_idx == 1 %}open{% endif %}" id="temp-{{ season_num }}">
+    <div class="temp-header" onclick="toggleSeason({{ season_num }})">
+      <div class="temp-num-badge" style="background:{{ cfg.cor }}22;color:{{ cfg.cor }}">
+        {% if season_num == 0 %}EP{% else %}{{ '%02d'|format(season_num) }}{% endif %}
+      </div>
+      <span class="temp-title">
+        {% if season_num == 0 %}Episódios{% else %}Temporada {{ '%02d'|format(season_num) }}{% endif %}
+      </span>
+      <span class="temp-count">{{ eps|length }} ep{% if eps|length != 1 %}s{% endif %}</span>
+      <span class="temp-chevron">›</span>
+    </div>
+
+    <div class="ep-list" id="eplist-{{ season_num }}">
+      {% for ep in eps %}
+      {% set ep_number = extract_episode_number(ep.titulo) %}
+      <a class="ep-row" href="/assistir/{{ ep.id }}">
+        <div class="ep-num-cell">
+          {% if ep_number %}{{ '%02d'|format(ep_number) }}{% else %}—{% endif %}
+        </div>
+        <div class="ep-row-meta">
+          <span class="ep-row-title" title="{{ ep.titulo }}">{{ ep.titulo }}</span>
+          {% if ep.duracao %}
+          <span class="ep-row-sub">{{ ep.duracao }}</span>
+          {% endif %}
+        </div>
+        <div class="ep-play-btn">
+          <svg viewBox="0 0 12 12"><polygon points="2,1 11,6 2,11"/></svg>
+        </div>
+      </a>
+      {% endfor %}
+    </div>
+  </div>
+  {% endfor %}
+</div>
+
+<script>
+function toggleSeason(num) {
+  const section = document.getElementById('temp-' + num);
+  section.classList.toggle('open');
+}
+// Open first season list
+document.addEventListener('DOMContentLoaded', function() {
+  const first = document.querySelector('.temp-section.open .ep-list');
+  if (first) first.style.display = 'flex';
+});
+// Keep open state synced on toggle
+document.querySelectorAll('.temp-header').forEach(function(h) {
+  h.addEventListener('click', function() {
+    const section = h.closest('.temp-section');
+    const list = section.querySelector('.ep-list');
+    list.style.display = section.classList.contains('open') ? 'flex' : 'none';
+  });
+});
+</script>
+{% endblock %}

@@ -1,0 +1,426 @@
+{% extends "base.html" %}
+{% block title %}Pinguim Filmes — Início{% endblock %}
+
+{% block content %}
+
+{% if not tmdb_configurado %}
+<div class="demo-banner" style="background: linear-gradient(90deg, #f5c518, #ff9500); color: #000; padding: 12px 36px; text-align: center; font-size: .85rem; font-weight: 600;">
+    🎬 Dados de demonstração - Para dados reais, configure TMDB_API_KEY no arquivo .env
+</div>
+{% endif %}
+
+{% if hero_items %}
+<section class="hero-section">
+    <div class="hero-slider" id="heroSlider">
+        <div class="hero-slides" id="heroSlides">
+            {% for item in hero_items %}
+            <div class="hero-slide {% if loop.first %}active{% endif %}">
+                {% set bg = item.backdrop if item.backdrop else item.capa %}
+                {% if bg %}
+                <img class="hero-slide-bg" src="{{ bg }}" alt="{{ item.titulo }}" onerror="this.style.display='none'">
+                {% endif %}
+                <div class="hero-rank">{{ '%02d' % loop.index }}</div>
+                <div class="hero-slide-content">
+                    <div class="hero-badge">
+                        {% if item.genero in section_config %}{{ section_config[item.genero].icon }}{% else %}🎬{% endif %}
+                        &nbsp;{{ item.genero or 'Filmes' }}
+                    </div>
+                    <h1>{{ item.titulo }}</h1>
+                    <div class="hero-meta">
+                        {% if item.ano %}<span>{{ item.ano }}</span><span class="hero-sep"></span>{% endif %}
+                        {% if item.nota %}<span class="imdb-rating">★ {{ item.nota }}</span>{% endif %}
+                    </div>
+                    {% if item.sinopse %}
+                    <p class="hero-synopsis">{{ item.sinopse[:180] }}{% if item.sinopse|length > 180 %}…{% endif %}</p>
+                    {% endif %}
+                    <div class="hero-actions">
+                        <a class="btn-play" href="{{ url_for('tmdb_play', t=item.titulo, id=item.tmdb_id or None, m=item.media_type or 'movie', rd=item.release_date or None, capa=item.capa or None, sinopse=item.sinopse or None) }}">
+                            <svg width="13" height="13" viewBox="0 0 12 12" fill="currentColor"><polygon points="2,1 11,6 2,11"/></svg>
+                            Assistir Agora
+                        </a>
+                    </div>
+                </div>
+            </div>
+            {% endfor %}
+        </div>
+        <button class="hero-nav-btn hero-nav-prev" onclick="heroMove(-1)" aria-label="Anterior">&#8249;</button>
+        <button class="hero-nav-btn hero-nav-next" onclick="heroMove(1)" aria-label="Próximo">&#8250;</button>
+        <div class="hero-progress-bar"><div class="hero-progress-fill" id="heroProgress"></div></div>
+    </div>
+    <div class="hero-thumbnails" id="heroThumbnails">
+        {% for item in hero_items %}
+        <div class="hero-thumb {% if loop.first %}active{% endif %}" onclick="heroGo({{ loop.index0 }})" data-idx="{{ loop.index0 }}">
+            <div class="hero-thumb-rank">{{ '%02d' % loop.index }}</div>
+            {% set hc = item.capa or '' %}
+            <img src="{{ hc if hc and 'lgfp.one' not in hc and 'picsum' not in hc else '' }}"
+                 alt="{{ item.titulo }}" loading="lazy"
+                 data-titulo="{{ item.titulo|e }}" data-media="movie"
+                 onerror="handleImgError(this)">
+        </div>
+        {% endfor %}
+    </div>
+</section>
+{% endif %}
+
+<div class="imdb-genres-bar">
+    <a href="{{ url_for('secao', categoria='Filmes') }}?tmdb=trending" class="genre-link">🔥 Em Alta</a>
+    <a href="{{ url_for('secao', categoria='Filmes') }}?tmdb=top_rated" class="genre-link">🏆 Top IMDb</a>
+    <a href="{{ url_for('secao', categoria='Filmes') }}?tmdb=action" class="genre-link">💥 Ação</a>
+    <a href="{{ url_for('secao', categoria='Filmes') }}?tmdb=adventure" class="genre-link">🗺️ Aventura</a>
+    <a href="{{ url_for('secao', categoria='Filmes') }}?tmdb=animation" class="genre-link">🎨 Animação</a>
+    <a href="{{ url_for('secao', categoria='Filmes') }}?tmdb=comedy" class="genre-link">😂 Comédia</a>
+    <a href="{{ url_for('secao', categoria='Filmes') }}?tmdb=horror" class="genre-link">💀 Terror</a>
+    <a href="{{ url_for('secao', categoria='Filmes') }}?tmdb=romance" class="genre-link">💕 Romance</a>
+    <a href="{{ url_for('secao', categoria='Filmes') }}?tmdb=sci_fi" class="genre-link">🚀 Ficção</a>
+    <a href="{{ url_for('secao', categoria='Filmes') }}?tmdb=thriller" class="genre-link">😱 Suspense</a>
+    <a href="{{ url_for('secao', categoria='Filmes') }}?tmdb=drama" class="genre-link">🎭 Drama</a>
+    <a href="{{ url_for('secao', categoria='Series') }}?tmdb=trending_tv" class="genre-link">📺 Séries TV</a>
+</div>
+
+<!-- ═══ Continuar Assistindo (renderizado via JS com localStorage) ═══ -->
+<section class="shelf" id="shelf-continuar-wrap" style="display:none">
+    <div class="shelf-head">
+        <h2>▶ Continuar Assistindo</h2>
+        <button class="shelf-see-all" style="background:none;border:none;cursor:pointer;color:var(--accent);font-size:.82rem;font-weight:600" onclick="clearAllProgress()">Limpar histórico</button>
+    </div>
+    <div class="shelf-track-wrap">
+        <button class="shelf-btn shelf-btn-left" onclick="shelfMove('shelf-continuar', -1)">&#8249;</button>
+        <div class="shelf-track" id="shelf-continuar"></div>
+        <button class="shelf-btn shelf-btn-right" onclick="shelfMove('shelf-continuar', 1)">&#8250;</button>
+    </div>
+</section>
+
+{% for shelf_name, items in home_sections.items() %}
+{% if items %}
+<section class="shelf">
+    <div class="shelf-head">
+        <h2>{{ shelf_name }}</h2>
+        <a class="shelf-see-all" href="{{ url_for('secao', categoria='Filmes') }}">Ver todos →</a>
+    </div>
+    <div class="shelf-track-wrap">
+        <div class="shelf-track" id="shelf-tmdb-{{ loop.index }}">
+            {% for item in items %}
+            {% if item.is_future is defined and item.is_future %}
+            {# Filme ainda não lançado — abre modal de trailer/data de lançamento #}
+            <div class="poster-card poster-future" title="Ver trailer: {{ item.titulo }}" style="cursor:pointer"
+                 onclick="openFutureModal({{ item.tmdb_id or 0 }}, {{ item.titulo|tojson }}, '{{ item.media_type or 'movie' }}', {{ (item.release_date or '')|tojson }}, {{ (item.capa or '')|tojson }}, {{ (item.sinopse or '')|tojson }})">
+                <div class="poster-rank-num">#{{ loop.index }}</div>
+                <div class="poster-img">
+                    {% set c = item.capa or '' %}
+                    <img src="{{ c if c and 'lgfp.one' not in c and 'picsum' not in c else '' }}"
+                         alt="{{ item.titulo }}" loading="lazy"
+                         data-titulo="{{ item.titulo|e }}" data-media="{{ item.media_type or 'movie' }}"
+                         onerror="handleImgError(this)">
+                </div>
+                <div class="poster-future-badge">🎬 Trailer{% if item.release_date %} · {{ item.release_date[:7] }}{% endif %}</div>
+                <div class="poster-overlay">
+                    <div class="poster-play future-play-btn">▶</div>
+                    <div class="poster-title">{{ item.titulo[:25] }}</div>
+                    <div class="poster-sub">Ver trailer</div>
+                </div>
+            </div>
+            {% else %}
+            <a class="poster-card" href="{{ url_for('tmdb_play', t=item.titulo, id=item.tmdb_id or None, m=item.media_type or 'movie', rd=item.release_date or None, capa=item.capa or None, sinopse=item.sinopse or None) }}">
+                <div class="poster-rank-num">#{{ loop.index }}</div>
+                <div class="poster-img">
+                    {% set c = item.capa or '' %}
+                    <img src="{{ c if c and 'lgfp.one' not in c and 'picsum' not in c else '' }}"
+                         alt="{{ item.titulo }}" loading="lazy"
+                         data-titulo="{{ item.titulo|e }}" data-media="{{ item.media_type or 'movie' }}"
+                         onerror="handleImgError(this)">
+                </div>
+                {% if item.nota %}
+                <div class="poster-rating">⭐ {{ item.nota }}</div>
+                {% endif %}
+                <div class="poster-overlay">
+                    <div class="poster-play"><svg viewBox="0 0 12 12"><polygon points="2,1 11,6 2,11"/></svg></div>
+                    <div class="poster-title">{{ item.titulo[:25] }}</div>
+                    <div class="poster-sub">{% if item.ano %}{{ item.ano }}{% endif %}</div>
+                </div>
+            </a>
+            {% endif %}
+            {% endfor %}
+        </div>
+    </div>
+</section>
+{% endif %}
+{% endfor %}
+
+{% for s in local_sections %}
+{% if s.itens %}
+<section class="shelf">
+    <div class="shelf-head">
+        <h2 style="color:{{ s.cfg.cor }}">
+            {{ s.cfg.icon }}
+            {% if s.nome == 'Filmes' %}Filmes
+            {% elif s.nome == 'Animações' %}Animes
+            {% else %}{{ s.nome }}{% endif %}
+            <span style="font-size:.7rem;color:#555;font-weight:400;margin-left:.4rem">{{ s.total }} títulos</span>
+        </h2>
+        <a class="shelf-see-all" href="{{ url_for('secao', categoria=s.nome) }}">Ver todos →</a>
+    </div>
+    <div class="shelf-track-wrap">
+        <button class="shelf-btn shelf-btn-left" onclick="shelfMove('shelf-local-{{ loop.index }}', -1)">&#8249;</button>
+        <div class="shelf-track" id="shelf-local-{{ loop.index }}">
+            {% for item in s.itens %}
+            {% set titulo = item['titulo'] or '' %}
+            {% set capa = item['capa'] or '' %}
+            {% set capa_ok = capa and 'lgfp.one' not in capa and 'picsum' not in capa %}
+            <a class="poster-card" href="{{ url_for('assistir', id_filme=item['id']) }}">
+                <div class="poster-rank-num">#{{ loop.index }}</div>
+                <div class="poster-img">
+                    <img src="{{ capa if capa_ok else '' }}"
+                         alt="{{ titulo }}"
+                         loading="lazy"
+                         data-titulo="{{ titulo|e }}"
+                         data-media="{{ 'tv' if s.nome in ('Seriado','Medicina') else 'movie' }}"
+                         onerror="handleImgError(this)">
+                </div>
+                <div class="poster-overlay">
+                    <div class="poster-play"><svg viewBox="0 0 12 12"><polygon points="2,1 11,6 2,11"/></svg></div>
+                    <div class="poster-title">{{ titulo[:25] }}</div>
+                    <div class="poster-sub">{{ s.nome }}</div>
+                </div>
+            </a>
+            {% endfor %}
+        </div>
+        <button class="shelf-btn shelf-btn-right" onclick="shelfMove('shelf-local-{{ loop.index }}', 1)">&#8250;</button>
+    </div>
+</section>
+{% endif %}
+{% endfor %}
+
+<script>
+var hIdx = 0;
+var hSlides = document.getElementById('heroSlides');
+var hThumbs = document.querySelectorAll('.hero-thumb');
+var hTotal = hThumbs.length;
+var hTimer = null;
+var hProgressEl = document.getElementById('heroProgress');
+var hDuration = 6000;
+var hSlideEls = document.querySelectorAll('.hero-slide');
+
+function heroGo(n) {
+    if (hSlideEls[hIdx]) hSlideEls[hIdx].classList.remove('active');
+    hIdx = (n + hTotal) % hTotal;
+    hSlides.style.transform = 'translateX(-' + (hIdx * 100) + '%)';
+    hThumbs.forEach(function(t,i) { t.classList.toggle('active', i===hIdx); });
+    if (hSlideEls[hIdx]) hSlideEls[hIdx].classList.add('active');
+    if (hThumbs[hIdx]) hThumbs[hIdx].scrollIntoView({ behavior: 'smooth', inline: 'center', block: 'nearest' });
+    resetProgress();
+}
+function heroMove(dir) { heroGo(hIdx + dir); }
+function resetProgress() {
+    if (hProgressEl) {
+        hProgressEl.style.transition = 'none';
+        hProgressEl.style.width = '0%';
+        requestAnimationFrame(function() {
+            requestAnimationFrame(function() {
+                hProgressEl.style.transition = 'width ' + hDuration + 'ms linear';
+                hProgressEl.style.width = '100%';
+            });
+        });
+    }
+}
+function resetTimer() {
+    if (hTimer) clearInterval(hTimer);
+    if (hTotal > 1) hTimer = setInterval(function() { heroMove(1); }, hDuration);
+}
+if (hTotal > 1) {
+    resetTimer();
+    resetProgress();
+    document.addEventListener('keydown', function(e) {
+        if (e.key === 'ArrowLeft') heroMove(-1);
+        if (e.key === 'ArrowRight') heroMove(1);
+    });
+    var touchStartX = 0;
+    var sliderEl = document.getElementById('heroSlider');
+    if (sliderEl) {
+        sliderEl.addEventListener('touchstart', function(e) { touchStartX = e.touches[0].clientX; }, {passive:true});
+        sliderEl.addEventListener('touchend', function(e) {
+            var dx = e.changedTouches[0].clientX - touchStartX;
+            if (Math.abs(dx) > 50) heroMove(dx < 0 ? 1 : -1);
+        }, {passive:true});
+    }
+}
+var shelfOffsets = {};
+function shelfMove(id, dir) {
+    var track = document.getElementById(id);
+    if (!track) return;
+    var cardW = 180 + 12;
+    var visible = Math.floor(track.parentElement.offsetWidth / cardW);
+    var maxCards = Math.max(0, track.children.length - visible);
+    if (!shelfOffsets[id]) shelfOffsets[id] = 0;
+    shelfOffsets[id] = Math.max(0, Math.min(shelfOffsets[id] + dir * visible, maxCards));
+    track.style.transform = 'translateX(-' + (shelfOffsets[id] * cardW) + 'px)';
+}
+
+</script>
+<!-- ═══ MODAL: TRAILER / EM BREVE ═══ -->
+<div class="modal-overlay" id="futureModalOverlay" style="display:none" onclick="closeFutureModal()"></div>
+<div class="future-modal" id="futureModal" style="display:none">
+    <button class="future-modal-close" onclick="closeFutureModal()">✕</button>
+
+    <!-- Estado: carregando -->
+    <div id="futureModalLoading" style="text-align:center;padding:3rem 1rem">
+        <div class="player-spinner" style="margin:0 auto 1rem"></div>
+        <p style="color:#888">Buscando trailer...</p>
+    </div>
+
+    <!-- Estado: trailer disponível -->
+    <div id="futureModalTrailer" style="display:none">
+        <div class="future-modal-yt" id="futureYtWrap">
+            <iframe id="futureYtFrame" src="" frameborder="0"
+                allow="autoplay; encrypted-media; picture-in-picture" allowfullscreen
+                style="width:100%;height:100%;border-radius:10px 10px 0 0"></iframe>
+        </div>
+        <div class="future-modal-info">
+            <h2 id="futureModalTitle" style="margin:0 0 .4rem;color:#fff;font-size:1.2rem"></h2>
+            <div id="futureModalMeta" style="color:#aaa;font-size:.82rem;margin-bottom:.7rem"></div>
+            <p id="futureModalSinopse" style="color:#ccc;font-size:.85rem;line-height:1.5;margin:0"></p>
+        </div>
+    </div>
+
+    <!-- Estado: sem trailer mas tem data -->
+    <div id="futureModalNoTrailer" style="display:none">
+        <div class="future-modal-poster-wrap">
+            <img id="futureModalPoster" src="" alt="" style="max-height:260px;border-radius:10px;object-fit:cover">
+        </div>
+        <div class="future-modal-info" style="text-align:center">
+            <h2 id="futureModalTitleNT" style="margin:0 0 .6rem;color:#fff;font-size:1.3rem"></h2>
+            <div class="future-release-banner" id="futureReleaseBanner">
+                <span class="future-clock">🕐</span>
+                <div>
+                    <div style="font-size:.72rem;color:#aaa;text-transform:uppercase;letter-spacing:.08em">Em cartaz a partir de</div>
+                    <div id="futureReleaseDate" style="font-size:1.4rem;font-weight:700;color:#f5c518"></div>
+                </div>
+            </div>
+            <p id="futureModalSinopseNT" style="color:#ccc;font-size:.85rem;line-height:1.5;margin:.8rem 0 0"></p>
+        </div>
+    </div>
+
+    <!-- Estado: sem API key -->
+    <div id="futureModalNoApi" style="display:none;text-align:center;padding:2.5rem 1rem">
+        <div style="font-size:3rem;margin-bottom:.8rem">🔑</div>
+        <h3 id="futureModalTitleNA" style="color:#fff;margin:0 0 .5rem"></h3>
+        <div class="future-release-banner" style="justify-content:center;margin:.8rem auto" id="futureReleaseBannerNA">
+            <span class="future-clock">🕐</span>
+            <div>
+                <div style="font-size:.72rem;color:#aaa;text-transform:uppercase;letter-spacing:.08em">Lançamento previsto</div>
+                <div id="futureReleaseDateNA" style="font-size:1.4rem;font-weight:700;color:#f5c518"></div>
+            </div>
+        </div>
+        <p style="color:#888;font-size:.82rem;margin:.8rem 0 0">Configure sua <strong style="color:#f5c518">TMDB_API_KEY</strong> para ver trailers automaticamente.</p>
+        <a id="futureYtSearch" href="#" target="_blank" rel="noopener"
+           style="display:inline-block;margin-top:1rem;background:#e50914;color:#fff;padding:.5rem 1.2rem;border-radius:8px;font-weight:600;font-size:.85rem;text-decoration:none">
+            🔍 Buscar trailer no YouTube
+        </a>
+    </div>
+</div>
+
+<script>
+/* ═══ MODAL TRAILER / EM BREVE ═══ */
+var _futureModalOpen = false;
+
+function openFutureModal(tmdbId, titulo, mtype, releaseDate, poster, sinopse) {
+    if (_futureModalOpen) closeFutureModal();
+    _futureModalOpen = true;
+
+    // Show overlay + modal in loading state
+    document.getElementById('futureModalOverlay').style.display = 'block';
+    var modal = document.getElementById('futureModal');
+    modal.style.display = 'block';
+    modal.classList.remove('future-modal-hide');
+
+    document.getElementById('futureModalLoading').style.display = 'block';
+    document.getElementById('futureModalTrailer').style.display = 'none';
+    document.getElementById('futureModalNoTrailer').style.display = 'none';
+    document.getElementById('futureModalNoApi').style.display = 'none';
+
+    // Clear iframe
+    document.getElementById('futureYtFrame').src = '';
+
+    // Format date for display (YYYY-MM-DD → "15 de Jan de 2026")
+    function fmtDate(d) {
+        if (!d) return '';
+        var meses = ['','Jan','Fev','Mar','Abr','Mai','Jun','Jul','Ago','Set','Out','Nov','Dez'];
+        var parts = d.split('-');
+        if (parts.length < 2) return d;
+        return parseInt(parts[2],10) + ' de ' + meses[parseInt(parts[1],10)] + ' de ' + parts[0];
+    }
+
+    // Fetch trailer from our API
+    var url = '/api/trailer?t=' + encodeURIComponent(titulo) + '&m=' + mtype;
+    if (tmdbId) url += '&id=' + tmdbId;
+
+    fetch(url)
+        .then(function(r){ return r.json(); })
+        .then(function(d) {
+            document.getElementById('futureModalLoading').style.display = 'none';
+
+            var rdFmt = d.release_fmt || fmtDate(d.release_date || releaseDate);
+            var usedSinopse = d.sinopse || sinopse || '';
+            var usedPoster  = d.poster  || poster  || '';
+            var usedTitulo  = d.titulo  || titulo  || '';
+
+            if (!d.has_api) {
+                // No API key: show static info + YouTube search link
+                document.getElementById('futureModalNoApi').style.display = 'block';
+                document.getElementById('futureModalTitleNA').textContent = usedTitulo;
+                document.getElementById('futureReleaseDateNA').textContent = rdFmt || 'Em breve';
+                var na = document.getElementById('futureReleaseBannerNA');
+                if (na) na.style.display = rdFmt ? 'flex' : 'none';
+                var ytLink = 'https://www.youtube.com/results?search_query=' + encodeURIComponent(usedTitulo + ' trailer');
+                document.getElementById('futureYtSearch').href = ytLink;
+                return;
+            }
+
+            if (d.trailer_key) {
+                // Has trailer: embed YouTube
+                document.getElementById('futureModalTrailer').style.display = 'block';
+                document.getElementById('futureModalTitle').textContent = usedTitulo;
+                var meta = [];
+                if (rdFmt) meta.push('📅 ' + rdFmt);
+                document.getElementById('futureModalMeta').textContent = meta.join('  ·  ');
+                document.getElementById('futureModalSinopse').textContent = usedSinopse;
+                document.getElementById('futureYtFrame').src =
+                    'https://www.youtube.com/embed/' + d.trailer_key + '?autoplay=1&rel=0&modestbranding=1';
+            } else {
+                // No trailer: show poster + release date
+                document.getElementById('futureModalNoTrailer').style.display = 'block';
+                document.getElementById('futureModalTitleNT').textContent = usedTitulo;
+                document.getElementById('futureReleaseDate').textContent = rdFmt || 'Em breve';
+                var rb = document.getElementById('futureReleaseBanner');
+                if (rb) rb.style.display = rdFmt ? 'flex' : 'none';
+                document.getElementById('futureModalSinopseNT').textContent = usedSinopse;
+                var img = document.getElementById('futureModalPoster');
+                img.src = usedPoster; img.alt = usedTitulo;
+            }
+        })
+        .catch(function() {
+            // Network error fallback
+            document.getElementById('futureModalLoading').style.display = 'none';
+            document.getElementById('futureModalNoTrailer').style.display = 'block';
+            document.getElementById('futureModalTitleNT').textContent = titulo;
+            document.getElementById('futureReleaseDate').textContent = fmtDate(releaseDate) || 'Em breve';
+            document.getElementById('futureModalSinopseNT').textContent = sinopse || '';
+            var img = document.getElementById('futureModalPoster');
+            img.src = poster; img.alt = titulo;
+        });
+}
+
+function closeFutureModal() {
+    _futureModalOpen = false;
+    document.getElementById('futureModalOverlay').style.display = 'none';
+    var modal = document.getElementById('futureModal');
+    modal.classList.add('future-modal-hide');
+    setTimeout(function(){
+        modal.style.display = 'none';
+        document.getElementById('futureYtFrame').src = ''; // stop video
+    }, 300);
+}
+
+document.addEventListener('keydown', function(e){ if (e.key === 'Escape') closeFutureModal(); });
+</script>
+
+{% endblock %}
