@@ -1,0 +1,56 @@
+# ── Banco de dados (criado automaticamente no primeiro run) ──
+*.db
+*.sqlite
+*.sqlite3
+
+# ── Variáveis de ambiente (NUNCA suba o .env real) ──
+.env
+
+# ── Python ──
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# ── Scripts de geração (não precisam ir ao servidor) ──
+generate_*.py
+movie_*.py
+expanded_data.py
+generated_data.py
+complete_tmdb_data.py
+compact_generator.py
+generate_fallback_data.py
+tmdb_bulk_covers.py
+tmdb_sync.py
+fix_capas.py
+count_items.py
+check_all.py
+list_cats.py
+movies_data.py
+movie_real_data.py
+movie_lists.py
+movie_data.py
+generate_final.py
+generate_inline.py
+generate_complete.py
+generate_real.py
+
+# ── Cache TMDB (será regenerado automaticamente) ──
+tmdb_cache.json
+
+# ── Arquivos locais ──
+INICIAR.bat
+iniciar_producao.sh
+Cinema.m3u
+*.m3u
+*.m3u8
+
+# ── Logs e temporários ──
+*.log
+.DS_Store
+Thumbs.db
