@@ -33565,6 +33565,7 @@ def reimportar():
 
 @app.route("/home")
 def home():
+    conn = get_db()
     hero_items = FEATURED_MOVIES + get_trending_tmdb("movie", limit=10)
 
     # TMDB sections — served from 24h disk cache; triggers background refresh if stale
