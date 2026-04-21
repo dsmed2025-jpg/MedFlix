@@ -33125,7 +33125,7 @@ def init_db():
     c.execute("CREATE INDEX IF NOT EXISTS idx_canal_status ON filmes(canal_status)")
     demo = c.execute("SELECT id,password FROM usuarios WHERE username='demo'").fetchone()
     if not demo:
-        c.execute("INSERT INTO usuarios (username,password,dias_acesso) VALUES (?,?,?)",
+        c.execute("INSERT OR IGNORE INTO usuarios (username,password,dias_acesso) VALUES (?,?,?)",
                   ("demo", generate_password_hash("demo123"), 30))
     elif not str(demo["password"]).startswith(("pbkdf2:","scrypt:")):
         c.execute("UPDATE usuarios SET password=? WHERE id=?",
@@ -33309,7 +33309,11 @@ _db_initialized = False
 def ensure_db():
     global _db_initialized
     if not _db_initialized:
-        init_db()
+        try:
+            init_db()
+        except Exception as e:
+            # Log but don't crash — UNIQUE constraint on demo user is harmless
+            app.logger.warning(f"[ensure_db] {e}")
         _db_initialized = True
 
 @app.context_processor
@@ -33566,6 +33570,9 @@ def reimportar():
 
 @app.route("/home")
 def home():
+    if not authenticated(): return redirect(url_for("login"))
+    conn = get_db()
+
     hero_items = FEATURED_MOVIES + get_trending_tmdb("movie", limit=10)
 
     # TMDB sections — served from 24h disk cache; triggers background refresh if stale
@@ -33588,7 +33595,6 @@ def home():
     # Active import job status
     last_job_id = session.get("last_import_job")
     import_status = _import_jobs.get(last_job_id) if last_job_id else None
-    # Also check any running job
     if not import_status:
         running = [(jid, j) for jid, j in _import_jobs.items() if j.get("status") == "running"]
         if running:
