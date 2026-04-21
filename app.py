@@ -7,9 +7,10 @@ from flask import (Flask, Response, abort, flash, jsonify, redirect,
 from werkzeug.security import check_password_hash, generate_password_hash
 
 BASE_DIR = Path(__file__).resolve().parent
-DB_PATH  = BASE_DIR / "pinguim.db"
+DISK_PATH = Path(os.getenv("RENDER_DISK_PATH", "/opt/render/project/src"))
+DB_PATH = DISK_PATH / "pinguim.db" if DISK_PATH.exists() else BASE_DIR / "pinguim.db"
 LOCAL_M3U = BASE_DIR / "Cinema.m3u"
-TMDB_CACHE_FILE = BASE_DIR / "tmdb_cache.json"
+TMDB_CACHE_FILE = DISK_PATH / "tmdb_cache.json" if DISK_PATH.exists() else BASE_DIR / "tmdb_cache.json"
 
 app = Flask(__name__)
 
