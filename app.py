@@ -1,1258 +1,1166 @@
 """
-MedFlix — Plataforma IPTV com Xtream Codes API
-Cada usuário faz login com suas credenciais do servidor IPTV.
-Não precisa importar M3U — tudo carrega via API em tempo real.
+MedFlix — Plataforma IPTV estilo Netflix/vouver.me
+- Admin vincula lista M3U ou Xtream Codes a cada usuário
+- Usuário faz login e vê SÓ os canais/filmes da lista dele
+- Player HLS embutido na página
+- Layout: sidebar de categorias + grid de cards + player fullscreen
 """
-import os, re, json, time, sqlite3, threading, urllib.request, urllib.parse
+import os, re, json, time, gzip, sqlite3, threading, urllib.request, urllib.parse, base64
 from pathlib import Path
 from functools import wraps
 from flask import (Flask, request, session, redirect, url_for,
-                   render_template_string, jsonify, Response, stream_with_context)
+                   render_template_string, jsonify, Response)
 from werkzeug.security import generate_password_hash, check_password_hash
 
-# ── Config ─────────────────────────────────────────────────────────────────
-BASE_DIR   = Path(__file__).parent
-DB_PATH    = BASE_DIR / "medflix.db"
+# ─── App setup ───────────────────────────────────────────────────────────────
+BASE_DIR = Path(__file__).parent
+DB_PATH  = BASE_DIR / "medflix.db"
 app = Flask(__name__)
-app.config["SECRET_KEY"]          = os.getenv("SECRET_KEY", "medflix-secret-2026")
-app.config["MAX_CONTENT_LENGTH"]  = 10 * 1024 * 1024
-app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
+app.config.update(
+    SECRET_KEY               = os.getenv("SECRET_KEY", "medflix-2026-secret"),
+    MAX_CONTENT_LENGTH       = 5 * 1024 * 1024,
+    SESSION_COOKIE_SAMESITE  = "Lax",
+    SESSION_COOKIE_HTTPONLY  = True,
+)
 
-# ── Database ────────────────────────────────────────────────────────────────
+# ─── Database ────────────────────────────────────────────────────────────────
 def get_db():
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    return conn
+    c = sqlite3.connect(DB_PATH)
+    c.row_factory = sqlite3.Row
+    return c
 
 _db_ready = False
 @app.before_request
 def ensure_db():
     global _db_ready
     if not _db_ready:
-        try:
-            _init_db()
-        except Exception as e:
-            app.logger.warning(f"DB init warning: {e}")
+        try: _init_db()
+        except Exception as e: app.logger.warning(f"DB: {e}")
         _db_ready = True
 
 def _init_db():
-    conn = get_db(); c = conn.cursor()
-    c.execute("""CREATE TABLE IF NOT EXISTS users (
-        id            INTEGER PRIMARY KEY AUTOINCREMENT,
-        username      TEXT NOT NULL UNIQUE,
+    c = get_db(); cur = c.cursor()
+    cur.execute("""CREATE TABLE IF NOT EXISTS users(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        username TEXT NOT NULL UNIQUE,
         password_hash TEXT NOT NULL,
-        email         TEXT DEFAULT '',
-        is_admin      INTEGER DEFAULT 0,
+        is_admin INTEGER DEFAULT 0,
         xtream_server TEXT DEFAULT '',
-        xtream_user   TEXT DEFAULT '',
-        xtream_pass   TEXT DEFAULT '',
-        playlist_url  TEXT DEFAULT '',
-        dias_acesso   INTEGER DEFAULT 30,
-        access_token  TEXT DEFAULT '',
-        created_at    DATETIME DEFAULT CURRENT_TIMESTAMP
-    )""")
-    # Migrate
-    existing = {r[1] for r in c.execute("PRAGMA table_info(users)").fetchall()}
-    for col, typedef in [
-        ("xtream_server", "TEXT DEFAULT ''"),
-        ("xtream_user",   "TEXT DEFAULT ''"),
-        ("xtream_pass",   "TEXT DEFAULT ''"),
-        ("playlist_url",  "TEXT DEFAULT ''"),
-        ("access_token",  "TEXT DEFAULT ''"),
-        ("is_admin",      "INTEGER DEFAULT 0"),
-        ("dias_acesso",   "INTEGER DEFAULT 30"),
-    ]:
-        if col not in existing:
-            c.execute(f"ALTER TABLE users ADD COLUMN {col} {typedef}")
-    # Demo admin
-    c.execute("INSERT OR IGNORE INTO users (username,password_hash,is_admin) VALUES (?,?,1)",
-              ("admin", generate_password_hash("admin123")))
-    conn.commit(); conn.close()
+        xtream_user TEXT DEFAULT '',
+        xtream_pass TEXT DEFAULT '',
+        playlist_url TEXT DEFAULT '',
+        access_token TEXT DEFAULT '',
+        dias INTEGER DEFAULT 30,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP)""")
+    # migrate
+    cols = {r[1] for r in cur.execute("PRAGMA table_info(users)")}
+    for col, t in [("xtream_server","TEXT DEFAULT ''"),("xtream_user","TEXT DEFAULT ''"),
+                   ("xtream_pass","TEXT DEFAULT ''"),("playlist_url","TEXT DEFAULT ''"),
+                   ("access_token","TEXT DEFAULT ''"),("dias","INTEGER DEFAULT 30")]:
+        if col not in cols: cur.execute(f"ALTER TABLE users ADD COLUMN {col} {t}")
+    # channels cache per user
+    cur.execute("""CREATE TABLE IF NOT EXISTS channels(
+        user_id INTEGER NOT NULL,
+        cat_id TEXT DEFAULT '',
+        cat_name TEXT DEFAULT '',
+        name TEXT NOT NULL,
+        logo TEXT DEFAULT '',
+        stream_url TEXT NOT NULL,
+        ctype TEXT DEFAULT 'live',
+        ext TEXT DEFAULT 'ts',
+        updated_at INTEGER DEFAULT 0,
+        PRIMARY KEY(user_id, stream_url))""")
+    # default admin
+    cur.execute("INSERT OR IGNORE INTO users(username,password_hash,is_admin) VALUES(?,?,1)",
+                ("demo", generate_password_hash("demo123")))
+    c.commit(); c.close()
 
-# ── Auth helpers ────────────────────────────────────────────────────────────
-def logged_in():
-    return "user_id" in session
+# ─── Auth ────────────────────────────────────────────────────────────────────
+def logged_in(): return "uid" in session
 
-def current_user():
+def me():
     if not logged_in(): return None
-    cached = session.get("_u")
-    if cached: return cached
-    conn = get_db()
-    u = conn.execute("SELECT * FROM users WHERE id=?", (session["user_id"],)).fetchone()
-    conn.close()
-    if not u: return None
-    d = dict(u)
-    session["_u"] = d
+    u = session.get("_me")
+    if u: return u
+    db = get_db()
+    row = db.execute("SELECT * FROM users WHERE id=?", (session["uid"],)).fetchone()
+    db.close()
+    if not row: return None
+    u = dict(row)
+    session["_me"] = u
+    return u
+
+def login_required(f):
+    @wraps(f)
+    def d(*a,**k):
+        if not logged_in(): return redirect("/login")
+        return f(*a,**k)
     return d
 
-def require_login(f):
+def admin_required(f):
     @wraps(f)
-    def decorated(*args, **kwargs):
-        if not logged_in(): return redirect(url_for("login"))
-        return f(*args, **kwargs)
-    return decorated
+    def d(*a,**k):
+        u = me()
+        if not u or not u["is_admin"]: return redirect("/")
+        return f(*a,**k)
+    return d
 
-def require_admin(f):
-    @wraps(f)
-    def decorated(*args, **kwargs):
-        u = current_user()
-        if not u or not u.get("is_admin"): return redirect(url_for("home"))
-        return f(*args, **kwargs)
-    return decorated
+# ─── M3U Parser ──────────────────────────────────────────────────────────────
+UA = ("Mozilla/5.0 (Linux; Android 10) AppleWebKit/537.36 "
+      "(KHTML, like Gecko) Chrome/120 Mobile Safari/537.36")
 
-# ── Xtream Codes API ─────────────────────────────────────────────────────────
-IPTV_UA = ("Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 "
-           "(KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36")
+_parse_cache = {}   # user_id → (channels_list, timestamp)
+CACHE_TTL = 1800    # 30 min
 
-_xtream_cache = {}  # (user_id, endpoint) → (data, timestamp)
-_m3u_cache = {}     # user_id → (parsed_data, timestamp)
-CACHE_TTL = 3600    # 1 hour
+# ── Genre mapping ──────────────────────────────────────────────────────────
+GENRES = [
+    ("live",    "📡 Ao Vivo"),
+    ("filmes",  "🎬 Filmes"),
+    ("series",  "📺 Séries"),
+    ("infantil","🧒 Infantil"),
+    ("esportes","⚽ Esportes"),
+    ("noticias","📰 Notícias"),
+    ("docs",    "🎥 Documentários"),
+    ("adultos", "🔞 Adultos"),
+    ("outros",  "📦 Outros"),
+]
+GENRE_KEYS = {g[0] for g in GENRES}
 
-def parse_m3u(m3u_content):
-    """Parse M3U playlist and return structured list."""
-    if not m3u_content:
-        return [], {}, {}, []
-    
-    lines = m3u_content.replace('\r\n', '\n').replace('\r', '\n').split('\n')
-    all_items = []
-    current_info = {}
-    live_cats = {}
-    vod_cats = {}
-    series_cats = {}
-    
-    for line in lines:
-        line = line.strip()
-        if not line or line.startswith('#EXTM3U'):
-            continue
-        
-        if line.startswith('#EXTINF:'):
-            info = line[8:] if line.startswith('#EXTINF:-1') else line[7:]
-            parts = info.split(',', 1)
-            attrs = parts[0].strip()
-            name = parts[1].strip() if len(parts) > 1 else 'Sem nome'
-            
-            current_info = {"name": name}
-            
-            tvg_match = re.search(r'tvg-name="([^"]*)"', attrs)
-            if tvg_match:
-                current_info["name"] = tvg_match.group(1)
-            
-            logo_match = re.search(r'tvg-logo="([^"]*)"', attrs)
-            if logo_match:
-                current_info["stream_icon"] = logo_match.group(1)
-            
-            group_match = re.search(r'group-title="([^"]*)"', attrs)
-            if group_match:
-                current_info["category_name"] = group_match.group(1)
+def _detect_genre(name, grp, url):
+    """Classify a channel into one of our genres."""
+    txt = (name + " " + grp).lower()
+    url_l = url.lower()
+    # Series/VOD by URL structure
+    if "/series/" in url_l: return "series"
+    if "/movie/"  in url_l: return "filmes"
+    # By group-title keywords
+    kw_map = [
+        ("filmes",   ["filme","movie","vod","cinema","estreia","lançamento"]),
+        ("series",   ["serie","séri","novela","temporada","episodio","episódio","season"]),
+        ("infantil", ["infantil","kids","criança","cartoon","animação","animacao","disney","nickelodeon"]),
+        ("esportes", ["sport","esporte","futebol","football","nba","nfl","ufc","mma","olympics","formula"]),
+        ("noticias", ["notícia","noticia","news","jornal","cnn","globonews","band news"]),
+        ("docs",     ["doc","document","discovery","national","history","biograph"]),
+        ("adultos",  ["adulto","adult","xxx","erotic","sex","18+"]),
+    ]
+    for genre, keywords in kw_map:
+        if any(k in txt for k in keywords):
+            return genre
+    # Live channels (default for non-VOD)
+    if not any(url_l.endswith(x) for x in [".mp4",".mkv",".avi",".mov"]):
+        return "live"
+    return "filmes"
+
+def _fetch_url(url):
+    """Download URL content with IPTV-compatible headers."""
+    req = urllib.request.Request(url, headers={
+        "User-Agent": UA,
+        "Accept": "*/*",
+        "Accept-Language": "pt-BR,pt;q=0.9",
+        "Connection": "keep-alive",
+        "Pragma": "no-cache",
+    })
+    with urllib.request.urlopen(req, timeout=90) as r:
+        raw = r.read()
+    try:    return raw.decode("utf-8")
+    except: return raw.decode("latin-1", errors="ignore")
+
+def _parse_m3u_text(text):
+    """Parse M3U/M3U+ text → list of channel dicts with genre."""
+    channels = []
+    lines = text.splitlines()
+    i = 0
+    while i < len(lines):
+        line = lines[i].strip()
+        if line.startswith("#EXTINF"):
+            logo = (re.search(r'tvg-logo="([^"]*)"',    line) or [None,""])[1].strip()
+            grp  = (re.search(r'group-title="([^"]*)"', line) or [None,""])[1].strip()
+            name = (re.search(r',(.+)$',               line) or [None,"Canal"])[1].strip()
+            url  = ""
+            j = i + 1
+            while j < len(lines):
+                cand = lines[j].strip()
+                if cand and not cand.startswith("#"):
+                    url = cand; i = j; break
+                j += 1
+            if url and name:
+                u_low = url.lower()
+                # Determine extension
+                ext = "ts"
+                if u_low.endswith(".m3u8"):   ext = "m3u8"
+                elif u_low.endswith(".mp4"):   ext = "mp4"
+                elif u_low.endswith(".mkv"):   ext = "mkv"
+                elif "/movie/"  in u_low:      ext = "mp4"
+                elif "/series/" in u_low:      ext = "mp4"
+                genre = _detect_genre(name, grp, url)
+                channels.append({
+                    "genre":      genre,
+                    "cat_name":   grp or genre,
+                    "name":       name,
+                    "logo":       logo,
+                    "stream_url": url,
+                    "ext":        ext,
+                })
+        i += 1
+    return channels
+
+def get_user_channels(user, force=False):
+    """Return parsed channels for a user, using in-memory cache."""
+    uid = user["id"]
+    if not force and uid in _parse_cache:
+        chans, ts = _parse_cache[uid]
+        if time.time() - ts < CACHE_TTL:
+            return chans
+
+    srv  = (user.get("xtream_server") or "").strip().rstrip("/")
+    xu   = (user.get("xtream_user")   or "").strip()
+    xp   = (user.get("xtream_pass")   or "").strip()
+    purl = (user.get("playlist_url")  or "").strip()
+
+    channels = []
+    error_msg = None
+
+    # Option 1: Xtream Codes → build M3U URL
+    if srv and xu and xp:
+        if not srv.startswith(("http://","https://")):
+            srv = "http://" + srv
+        m3u_url = f"{srv}/get.php?username={xu}&password={xp}&type=m3u_plus&output=ts"
+        try:
+            app.logger.info(f"Fetching Xtream M3U for user {uid}: {m3u_url[:60]}...")
+            text = _fetch_url(m3u_url)
+            if "#EXTINF" in text:
+                channels = _parse_m3u_text(text)
+                app.logger.info(f"Parsed {len(channels)} channels for user {uid}")
             else:
-                current_info["category_name"] = "Geral"
-            
-        elif line.startswith('#'):
-            continue
-        else:
-            if line and current_info.get("name") and current_info["name"] != 'Sem nome':
-                stream_url = line
-                stream_id = abs(hash(stream_url)) % (10**12)
-                cat_name = current_info.get("category_name", "Geral")
-                cat_id = cat_name.replace(" ", "_").lower()
-                
-                item = {
-                    "name": current_info.get("name", "Sem nome"),
-                    "stream_id": stream_id,
-                    "stream_icon": current_info.get("stream_icon", ""),
-                    "category_name": cat_name,
-                    "category_id": cat_id,
-                    "_url": stream_url,
-                }
-                all_items.append(item)
-                
-                if cat_name not in live_cats:
-                    live_cats[cat_name] = {"category_id": cat_id, "category_name": cat_name}
-                if cat_name not in vod_cats:
-                    vod_cats[cat_name] = {"category_id": cat_id, "category_name": cat_name}
-            
-            current_info = {}
-    
-    return all_items, live_cats, vod_cats, series_cats
+                error_msg = f"Resposta inválida do servidor: {text[:200]}"
+                app.logger.warning(error_msg)
+        except Exception as e:
+            error_msg = str(e)
+            app.logger.warning(f"Xtream fetch error for user {uid}: {e}")
 
-def get_m3u_streams(u):
-    """Get parsed M3U streams for user, with caching."""
-    playlist_url = (u.get("playlist_url") or "").strip()
-    if not playlist_url:
-        return {"items": [], "live": [], "vod": [], "series": [], "live_categories": [], "vod_categories": [], "series_categories": []}
-    
-    cache_key = u["id"]
-    if cache_key in _m3u_cache:
-        data, ts = _m3u_cache[cache_key]
-        if time.time() - ts < CACHE_TTL:
-            return data
-    
-    try:
-        req = urllib.request.Request(playlist_url, headers={"User-Agent": IPTV_UA})
-        with urllib.request.urlopen(req, timeout=20) as r:
-            content = r.read().decode("utf-8", "ignore")
-        
-        all_items, live_cats, vod_cats, series_cats = parse_m3u(content)
-        
-        result = {
-            "items": all_items,
-            "live": all_items,
-            "vod": all_items,
-            "series": [],
-            "live_categories": list(live_cats.values()),
-            "vod_categories": list(vod_cats.values()),
-            "series_categories": [],
-        }
-        
-        _m3u_cache[cache_key] = (result, time.time())
-        return result
-    except Exception as e:
-        app.logger.warning(f"M3U parse error: {e}")
-        return {"items": [], "live": [], "vod": [], "series": [], "live_categories": [], "vod_categories": [], "series_categories": []}
+    # Option 2: Direct M3U URL
+    if not channels and purl:
+        try:
+            app.logger.info(f"Fetching M3U URL for user {uid}: {purl[:60]}...")
+            text = _fetch_url(purl)
+            if "#EXTINF" in text:
+                channels = _parse_m3u_text(text)
+                app.logger.info(f"Parsed {len(channels)} channels (M3U URL) for user {uid}")
+            else:
+                app.logger.warning(f"M3U URL returned invalid data for user {uid}: {text[:200]}")
+        except Exception as e:
+            app.logger.warning(f"M3U URL fetch error for user {uid}: {e}")
 
-def m3u_get_stream_url(u, stream_id):
-    """Get stream URL from parsed M3U data by stream_id."""
-    streams = get_m3u_streams(u)
-    for item in streams.get("items", []):
-        if str(item.get("stream_id")) == str(stream_id):
-            return item.get("_url")
-    return None
+    _parse_cache[uid] = (channels, time.time())
+    if error_msg and not channels:
+        _parse_cache[uid] = ([], time.time() - CACHE_TTL + 60)  # retry in 60s
+    return channels
 
-def xtream_request(server, username, password, endpoint, params=None, user_id=None):
-    """Make a request to Xtream Codes API with caching."""
-    if not server or not username or not password:
-        return None
-    
-    # Normalize server URL
-    server = server.rstrip("/")
-    if not server.startswith(("http://","https://")):
-        server = "http://" + server
-    
-    cache_key = (user_id, endpoint, str(params))
-    if cache_key in _xtream_cache:
-        data, ts = _xtream_cache[cache_key]
-        if time.time() - ts < CACHE_TTL:
-            return data
-    
-    base_params = {"username": username, "password": password}
-    if params:
-        base_params.update(params)
-    
-    url = f"{server}/player_api.php?{urllib.parse.urlencode(base_params)}"
-    if endpoint:
-        url += f"&action={endpoint}"
-    
-    try:
-        req = urllib.request.Request(url, headers={
-            "User-Agent": IPTV_UA,
-            "Accept": "application/json",
-        })
-        with urllib.request.urlopen(req, timeout=15) as r:
-            data = json.loads(r.read().decode("utf-8", "ignore"))
-        _xtream_cache[cache_key] = (data, time.time())
-        return data
-    except Exception as e:
-        app.logger.warning(f"Xtream API error: {e}")
-        return None
+def get_genre_counts(channels):
+    """Return dict of genre → count."""
+    counts = {}
+    for ch in channels:
+        g = ch.get("genre","outros")
+        counts[g] = counts.get(g, 0) + 1
+    return counts
 
-def get_user_xtream(u):
-    """Get Xtream credentials from user dict."""
-    server   = (u.get("xtream_server") or "").strip()
-    username = (u.get("xtream_user")   or "").strip()
-    password = (u.get("xtream_pass")   or "").strip()
-    return server, username, password
+# ─── Background preload ───────────────────────────────────────────────────────
+def _preload_user(user):
+    try: get_user_channels(user, force=True)
+    except: pass
 
-def xtream_get_stream_url(u, stream_id, stream_type="live", ext="ts"):
-    """Build the direct stream URL for a given stream."""
-    server, username, password = get_user_xtream(u)
-    if not server: return None
-    server = server.rstrip("/")
-    if not server.startswith(("http://","https://")):
-        server = "http://" + server
-    if stream_type == "live":
-        return f"{server}/{username}/{password}/{stream_id}.{ext}"
-    elif stream_type == "vod":
-        return f"{server}/movie/{username}/{password}/{stream_id}.{ext}"
-    elif stream_type == "series":
-        return f"{server}/series/{username}/{password}/{stream_id}.{ext}"
-    return None
-
-# ── Routes ─────────────────────────────────────────────────────────────────
+# ─── Routes ──────────────────────────────────────────────────────────────────
 
 @app.route("/")
 def index():
-    if logged_in(): return redirect(url_for("home"))
-    return redirect(url_for("login"))
+    return redirect("/login" if not logged_in() else "/tv")
 
 @app.route("/login", methods=["GET","POST"])
 def login():
-    error = ""
+    err = ""
     if request.method == "POST":
-        username = request.form.get("username","").strip()
-        password = request.form.get("password","").strip()
-        conn = get_db()
-        u = conn.execute("SELECT * FROM users WHERE username=?", (username,)).fetchone()
-        conn.close()
-        if u and check_password_hash(u["password_hash"], password):
+        u = request.form.get("username","").strip()
+        p = request.form.get("password","").strip()
+        db = get_db()
+        row = db.execute("SELECT * FROM users WHERE username=?", (u,)).fetchone()
+        db.close()
+        if row and check_password_hash(row["password_hash"], p):
             session.clear()
-            session["user_id"] = u["id"]
-            session["username"] = u["username"]
-            return redirect(url_for("home"))
-        error = "Usuário ou senha incorretos."
-    return render_template_string(LOGIN_HTML, error=error)
+            session["uid"]      = row["id"]
+            session["username"] = row["username"]
+            # preload channels in background
+            threading.Thread(target=_preload_user, args=(dict(row),), daemon=True).start()
+            return redirect("/tv")
+        err = "Usuário ou senha incorretos."
+    return _page("login", LOGIN_HTML, err=err)
 
 @app.route("/logout")
 def logout():
-    session.clear()
-    return redirect(url_for("login"))
-
-@app.route("/home")
-@require_login
-def home():
-    u = current_user()
-    server, username, password = get_user_xtream(u)
-    has_xtream = bool(server and username and password)
-    has_m3u = bool((u.get("playlist_url") or "").strip())
-    has_content = has_xtream or has_m3u
-    
-    live_cats = vod_cats = series_cats = None
-    account_info = None
-    
-    if has_xtream:
-        info = xtream_request(server, username, password, None, user_id=u["id"])
-        if info:
-            account_info = info.get("user_info", {})
-        live_cats   = xtream_request(server, username, password, "get_live_categories",   user_id=u["id"]) or []
-        vod_cats    = xtream_request(server, username, password, "get_vod_categories",    user_id=u["id"]) or []
-        series_cats = xtream_request(server, username, password, "get_series_categories", user_id=u["id"]) or []
-    elif has_m3u:
-        m3u_data = get_m3u_streams(u)
-        live_cats   = m3u_data.get("live_categories", [])
-        vod_cats    = m3u_data.get("vod_categories", [])
-        series_cats = []
-    
-    return render_template_string(HOME_HTML,
-        u=u, has_xtream=has_xtream, has_m3u=has_m3u, has_content=has_content,
-        live_cats=live_cats, vod_cats=vod_cats, series_cats=series_cats,
-        account_info=account_info)
-
-@app.route("/browse/<content_type>")
-@require_login
-def browse(content_type):
-    """Browse live/vod/series by category."""
-    u = current_user()
-    server, username, password = get_user_xtream(u)
-    playlist_url = (u.get("playlist_url") or "").strip()
-    category_id = request.args.get("cat", "")
-    page = int(request.args.get("p", 1))
-    per_page = 40
-    
-    items = []
-    category_name = request.args.get("cat_name", content_type.title())
-    
-    if server and username and password:
-        if content_type == "live":
-            action = "get_live_streams"
-        elif content_type == "vod":
-            action = "get_vod_streams"
-        else:
-            action = "get_series"
-        
-        params = {}
-        if category_id:
-            params["category_id"] = category_id
-        
-        items = xtream_request(server, username, password, action, params, user_id=u["id"]) or []
-    elif playlist_url:
-        m3u_data = get_m3u_streams(u)
-        items = m3u_data.get("items", [])
-    
-    if category_id and (server and username and password or playlist_url):
-        items = [i for i in items if i.get("category_id", "").replace(" ", "_").lower() == category_id]
-    
-    total = len(items)
-    start = (page-1)*per_page
-    items_page = items[start:start+per_page]
-    total_pages = max(1, (total + per_page - 1) // per_page)
-    
-    return render_template_string(BROWSE_HTML,
-        u=u, items=items_page, content_type=content_type,
-        category_name=category_name, category_id=category_id,
-        page=page, total_pages=total_pages, total=total)
-
-@app.route("/watch/<content_type>/<stream_id>")
-@require_login
-def watch(content_type, stream_id):
-    """Watch a live/vod/series stream."""
-    u = current_user()
-    server, username, password = get_user_xtream(u)
-    
-    title = request.args.get("title", "")
-    cover = request.args.get("cover", "")
-    cat_id = request.args.get("cat", "")
-    
-    stream_url = ""
-    info = {}
-    episodes = []
-    
-    if server and username and password:
-        if content_type == "live":
-            stream_url = xtream_get_stream_url(u, stream_id, "live", "ts")
-        elif content_type == "vod":
-            stream_url = xtream_get_stream_url(u, stream_id, "vod", "mp4")
-            vod_info = xtream_request(server, username, password, "get_vod_info",
-                                      {"vod_id": stream_id}, user_id=u["id"])
-            if vod_info:
-                info = vod_info.get("info", {})
-                title = title or info.get("name","")
-                cover = cover or info.get("cover_big") or info.get("movie_image","")
-        elif content_type == "series":
-            series_info = xtream_request(server, username, password, "get_series_info",
-                                         {"series_id": stream_id}, user_id=u["id"])
-            if series_info:
-                info = series_info.get("info", {})
-                title = title or info.get("name","")
-                cover = cover or info.get("cover","")
-                for season_num, season_eps in (series_info.get("episodes") or {}).items():
-                    for ep in (season_eps or []):
-                        ep["_season"] = season_num
-                        episodes.append(ep)
-                if episodes:
-                    first = episodes[0]
-                    stream_id = first.get("id", stream_id)
-                    stream_url = xtream_get_stream_url(u, stream_id, "series",
-                                                       first.get("container_extension","mp4"))
-    else:
-        stream_url = m3u_get_stream_url(u, stream_id)
-        if not title:
-            title = request.args.get("name", "Stream")
-    
-    return render_template_string(WATCH_HTML,
-        u=u, stream_url=stream_url, title=title, cover=cover,
-        content_type=content_type, stream_id=stream_id,
-        info=info, episodes=episodes, cat_id=cat_id)
-
-@app.route("/watch/series/<series_id>/ep/<ep_id>")
-@require_login  
-def watch_episode(series_id, ep_id):
-    u = current_user()
-    ext = request.args.get("ext","mp4")
-    stream_url = xtream_get_stream_url(u, ep_id, "series", ext)
-    title = request.args.get("title","")
-    cover = request.args.get("cover","")
-    return render_template_string(WATCH_HTML,
-        u=u, stream_url=stream_url, title=title, cover=cover,
-        content_type="series", stream_id=ep_id,
-        info={}, episodes=[], cat_id="")
-
-@app.route("/search")
-@require_login
-def search():
-    u = current_user()
-    q = request.args.get("q","").strip().lower()
-    server, username, password = get_user_xtream(u)
-    results = []
-    
-    if q and server:
-        for action, ctype in [
-            ("get_live_streams","live"),
-            ("get_vod_streams","vod"),
-            ("get_series","series")
-        ]:
-            items = xtream_request(server, username, password, action, user_id=u["id"]) or []
-            for item in items:
-                name = (item.get("name") or item.get("title","")).lower()
-                if q in name:
-                    item["_type"] = ctype
-                    results.append(item)
-                    if len(results) >= 60:
-                        break
-            if len(results) >= 60:
-                break
-    
-    return render_template_string(SEARCH_HTML, u=u, q=q, results=results)
-
-# ── Admin routes ────────────────────────────────────────────────────────────
-
-@app.route("/setup", methods=["GET","POST"])
-def setup():
-    conn = get_db()
-    has_admin = conn.execute("SELECT COUNT(*) FROM users WHERE is_admin=1").fetchone()[0]
-    
-    if has_admin:
-        conn.close()
-        return render_template_string(SIMPLE_PAGE,
-            title="Setup já concluído",
-            icon="🔒",
-            msg="Já existe um administrador. Esta rota está desativada.",
-            link="/", link_text="← Voltar")
-    
-    error = ""
-    if request.method == "POST":
-        username = request.form.get("username","").strip()
-        password = request.form.get("password","").strip()
-        code     = request.form.get("code","").strip()
-        setup_code = os.getenv("SETUP_CODE","medflix2026")
-        
-        if code != setup_code:
-            error = "Código incorreto."
-        elif not username or len(password) < 6:
-            error = "Usuário obrigatório e senha mínimo 6 caracteres."
-        else:
-            conn.execute("INSERT OR REPLACE INTO users (username,password_hash,is_admin) VALUES (?,?,1)",
-                         (username, generate_password_hash(password)))
-            conn.commit(); conn.close()
-            return render_template_string(SIMPLE_PAGE,
-                title="Admin criado!", icon="✅",
-                msg=f"Usuário '{username}' criado como administrador.",
-                link="/login", link_text="Fazer login →")
-    conn.close()
-    return render_template_string(SETUP_HTML, error=error)
-
-@app.route("/admin/reset", methods=["GET","POST"])
-def admin_reset():
-    reset_key = os.getenv("ADMIN_RESET_KEY","").strip()
-    if not reset_key:
-        return render_template_string(SIMPLE_PAGE,
-            title="Desativado", icon="🔒",
-            msg="Defina ADMIN_RESET_KEY nas variáveis de ambiente para ativar.",
-            link="/", link_text="← Voltar")
-    
-    error = ""
-    if request.method == "POST":
-        if request.form.get("key","") != reset_key:
-            error = "Chave incorreta."
-        else:
-            username = request.form.get("username","").strip()
-            password = request.form.get("password","").strip()
-            if not username or len(password) < 6:
-                error = "Preencha todos os campos (senha mín. 6 chars)."
-            else:
-                import secrets
-                token = secrets.token_urlsafe(24)
-                conn = get_db()
-                u = conn.execute("SELECT id FROM users WHERE username=?", (username,)).fetchone()
-                if u:
-                    conn.execute("UPDATE users SET is_admin=1,password_hash=?,access_token=? WHERE id=?",
-                                 (generate_password_hash(password), token, u["id"]))
-                else:
-                    conn.execute("INSERT INTO users (username,password_hash,is_admin,access_token) VALUES (?,?,1,?)",
-                                 (username, generate_password_hash(password), token))
-                conn.commit(); conn.close()
-                return render_template_string(SIMPLE_PAGE,
-                    title="Acesso recuperado!", icon="✅",
-                    msg=f"Admin '{username}' criado. Remova ADMIN_RESET_KEY após usar.",
-                    link="/login", link_text="Fazer login →")
-    return render_template_string(RESET_HTML, error=error)
-
-@app.route("/admin", methods=["GET","POST"])
-@require_admin
-def admin():
-    """Admin panel: manage users and their Xtream credentials."""
-    conn = get_db()
-    msg = error = ""
-    
-    if request.method == "POST":
-        action = request.form.get("action","")
-        try:
-            import secrets
-            if action == "create":
-                uname    = request.form.get("username","").strip()
-                pwd      = request.form.get("password","").strip()
-                email    = request.form.get("email","").strip()
-                dias     = int(request.form.get("dias",30))
-                srv      = request.form.get("xtream_server","").strip()
-                xu       = request.form.get("xtream_user","").strip()
-                xp       = request.form.get("xtream_pass","").strip()
-                playlist = request.form.get("playlist_url","").strip()
-                token    = secrets.token_urlsafe(24)
-                conn.execute(
-                    "INSERT INTO users (username,password_hash,email,dias_acesso,"
-                    "xtream_server,xtream_user,xtream_pass,playlist_url,access_token) "
-                    "VALUES (?,?,?,?,?,?,?,?,?)",
-                    (uname, generate_password_hash(pwd), email, dias, srv, xu, xp, playlist, token)
-                )
-                conn.commit()
-                msg = f"✅ Usuário '{uname}' criado. Token: {token}"
-            
-            elif action == "update":
-                uid  = int(request.form.get("uid"))
-                conn.execute(
-                    "UPDATE users SET email=?,dias_acesso=?,xtream_server=?,"
-                    "xtream_user=?,xtream_pass=?,playlist_url=? WHERE id=?",
-                    (request.form.get("email",""),
-                     int(request.form.get("dias",30)),
-                     request.form.get("xtream_server","").strip(),
-                     request.form.get("xtream_user","").strip(),
-                     request.form.get("xtream_pass","").strip(),
-                     request.form.get("playlist_url","").strip(),
-                     uid)
-                )
-                conn.commit()
-                msg = "✅ Usuário atualizado."
-            
-            elif action == "gen_token":
-                uid   = int(request.form.get("uid"))
-                token = secrets.token_urlsafe(24)
-                conn.execute("UPDATE users SET access_token=? WHERE id=?", (token, uid))
-                conn.commit()
-                msg = f"✅ Novo token: {token}"
-            
-            elif action == "delete":
-                uid = int(request.form.get("uid"))
-                conn.execute("DELETE FROM users WHERE id=? AND is_admin=0", (uid,))
-                conn.commit()
-                msg = "✅ Usuário excluído."
-            
-            elif action == "reset_password":
-                uid = int(request.form.get("uid"))
-                pwd = request.form.get("new_password","").strip()
-                if len(pwd) >= 6:
-                    conn.execute("UPDATE users SET password_hash=? WHERE id=?",
-                                 (generate_password_hash(pwd), uid))
-                    conn.commit()
-                    msg = "✅ Senha alterada."
-                else:
-                    error = "Senha mínimo 6 caracteres."
-        except Exception as e:
-            error = str(e)
-    
-    users = conn.execute(
-        "SELECT id,username,email,is_admin,dias_acesso,xtream_server,"
-        "xtream_user,xtream_pass,playlist_url,access_token,created_at "
-        "FROM users ORDER BY id"
-    ).fetchall()
-    conn.close()
-    return render_template_string(ADMIN_HTML, users=users, msg=msg, error=error, u=current_user())
+    session.clear(); return redirect("/login")
 
 @app.route("/login/token")
 def login_token():
-    """Auto-login via token URL."""
-    token = request.args.get("t","").strip()
-    if not token: return redirect(url_for("login"))
-    conn = get_db()
-    u = conn.execute("SELECT * FROM users WHERE access_token=? AND access_token!=''", (token,)).fetchone()
-    conn.close()
-    if not u: return redirect(url_for("login"))
+    t = request.args.get("t","").strip()
+    db = get_db()
+    row = db.execute("SELECT * FROM users WHERE access_token=? AND access_token!=''", (t,)).fetchone()
+    db.close()
+    if not row: return redirect("/login")
     session.clear()
-    session["user_id"]  = u["id"]
-    session["username"] = u["username"]
-    return redirect(url_for("home"))
+    session["uid"]      = row["id"]
+    session["username"] = row["username"]
+    threading.Thread(target=_preload_user, args=(dict(row),), daemon=True).start()
+    return redirect("/tv")
 
-@app.route("/api/me")
-@require_login
-def api_me():
-    u = current_user()
-    server, username, password = get_user_xtream(u)
-    xtream_ok = False
-    exp_date = ""
-    if server and username and password:
-        info = xtream_request(server, username, password, None, user_id=u["id"])
-        if info and info.get("user_info"):
-            xtream_ok = True
-            exp_date = info["user_info"].get("exp_date","")
-    return jsonify({
-        "id": u["id"], "username": u["username"],
-        "has_xtream": xtream_ok, "exp_date": exp_date,
-    })
+@app.route("/tv")
+@login_required
+def tv():
+    u = me()
+    channels = get_user_channels(u)
+    genre   = request.args.get("genre", "")
+    subcat  = request.args.get("cat", "")
+    q       = request.args.get("q","").strip().lower()
 
-@app.route("/api/clear-cache")
-@require_login
-def api_clear_cache():
-    u = current_user()
-    keys_to_del = [k for k in _xtream_cache if k[0] == u["id"]]
-    for k in keys_to_del:
-        del _xtream_cache[k]
-    if u["id"] in _m3u_cache:
-        del _m3u_cache[u["id"]]
-    session.pop("_u", None)
-    return jsonify({"ok": True, "cleared": len(keys_to_del)})
+    # Filter by genre first, then subcat, then search
+    filtered = channels
+    if genre:
+        filtered = [ch for ch in filtered if ch.get("genre") == genre]
+    if subcat:
+        filtered = [ch for ch in filtered if re.sub(r"[^a-z0-9]","",ch.get("cat_name","").lower())[:20] == subcat]
+    if q:
+        filtered = [ch for ch in filtered if q in ch["name"].lower()]
 
-# ── Templates ───────────────────────────────────────────────────────────────
+    # Subcats for this genre
+    if genre:
+        seen = {}
+        for ch in [c for c in channels if c.get("genre")==genre]:
+            cid = re.sub(r"[^a-z0-9]","", ch.get("cat_name","").lower())[:20]
+            if cid not in seen: seen[cid] = ch.get("cat_name","")
+        subcats = list(seen.items())
+    else:
+        subcats = []
 
-_CSS = """
-:root {
-  --bg: #08080f;
-  --bg2: #0f0f1a;
-  --bg3: #161625;
-  --border: rgba(255,255,255,.08);
-  --text: #e8e8f0;
-  --muted: #888;
-  --accent: #e63950;
-  --accent2: #ff6b35;
-  --gold: #f5c518;
-  --radius: 12px;
-  --font: 'Segoe UI', system-ui, sans-serif;
+    genre_counts = get_genre_counts(channels)
+    return _page("tv", TV_HTML,
+                 u=u, channels=filtered, has_list=bool(channels),
+                 genre=genre, subcat=subcat, q=q,
+                 subcats=subcats,
+                 genres=GENRES, genre_counts=genre_counts)
+
+@app.route("/watch")
+@login_required
+def watch():
+    u = me()
+    channels = get_user_channels(u)
+    stream = request.args.get("s","")
+    ch = next((c for c in channels if _url_id(c["stream_url"]) == stream), None)
+    if not ch: return redirect("/tv")
+    genre = request.args.get("genre", ch.get("genre",""))
+    # Playlist = same genre (or same cat_name for better grouping)
+    playlist = [c for c in channels if c.get("genre") == genre]
+    if not playlist: playlist = channels
+    genre_counts = get_genre_counts(channels)
+    return _page("watch", WATCH_HTML,
+                 u=u, ch=ch, playlist=playlist, genre=genre,
+                 genres=GENRES, genre_counts=genre_counts)
+
+@app.route("/api/reload")
+@login_required
+def api_reload():
+    u = me()
+    _parse_cache.pop(u["id"], None)
+    threading.Thread(target=_preload_user, args=(u,), daemon=True).start()
+    return jsonify({"ok": True})
+
+@app.route("/api/channels")
+@login_required
+def api_channels():
+    u = me()
+    channels = get_user_channels(u)
+    q   = request.args.get("q","").strip().lower()
+    cat = request.args.get("cat","")
+    out = [ch for ch in channels
+           if (not cat or ch["cat_id"] == cat) and
+              (not q or q in ch["name"].lower())]
+    return jsonify(out[:200])
+
+# ─── ADMIN ───────────────────────────────────────────────────────────────────
+
+@app.route("/setup", methods=["GET","POST"])
+def setup():
+    db = get_db()
+    has = db.execute("SELECT COUNT(*) FROM users WHERE is_admin=1").fetchone()[0]
+    db.close()
+    if has: return _simple("🔒","Setup já feito","Já existe um admin.","/login","Entrar")
+    err = ""
+    if request.method == "POST":
+        u = request.form.get("u","").strip()
+        p = request.form.get("p","").strip()
+        code = request.form.get("code","").strip()
+        if code != os.getenv("SETUP_CODE","medflix2026"): err="Código incorreto."
+        elif not u or len(p)<6: err="Preencha usuário e senha (mín 6)."
+        else:
+            db = get_db()
+            db.execute("INSERT OR REPLACE INTO users(username,password_hash,is_admin) VALUES(?,?,1)",
+                       (u, generate_password_hash(p)))
+            db.commit(); db.close()
+            return _simple("✅","Admin criado!",f"Usuário '{u}' criado.","/login","Fazer login →")
+    return _page("setup", SETUP_HTML, err=err)
+
+@app.route("/admin/reset", methods=["GET","POST"])
+def admin_reset():
+    key = os.getenv("ADMIN_RESET_KEY","").strip()
+    if not key: return _simple("🔒","Desativado","Defina ADMIN_RESET_KEY nas env vars.","/","Voltar")
+    err = ""
+    if request.method == "POST":
+        if request.form.get("key","") != key: err="Chave incorreta."
+        else:
+            u = request.form.get("u","").strip()
+            p = request.form.get("p","").strip()
+            if not u or len(p)<6: err="Preencha todos os campos."
+            else:
+                import secrets as _sec
+                tok = _sec.token_urlsafe(24)
+                db = get_db()
+                row = db.execute("SELECT id FROM users WHERE username=?", (u,)).fetchone()
+                if row: db.execute("UPDATE users SET is_admin=1,password_hash=?,access_token=? WHERE id=?",
+                                   (generate_password_hash(p), tok, row["id"]))
+                else:   db.execute("INSERT INTO users(username,password_hash,is_admin,access_token) VALUES(?,?,1,?)",
+                                   (u, generate_password_hash(p), tok))
+                db.commit(); db.close()
+                return _simple("✅","Acesso recuperado!",f"Admin '{u}' criado. Remova ADMIN_RESET_KEY após usar.","/login","Login →")
+    return _page("reset", RESET_HTML, err=err)
+
+@app.route("/admin", methods=["GET","POST"])
+@admin_required
+def admin():
+    db = get_db()
+    msg = err = ""
+    if request.method == "POST":
+        a = request.form.get("a","")
+        try:
+            import secrets as _sec
+            if a == "create":
+                tok = _sec.token_urlsafe(24)
+                db.execute(
+                    "INSERT INTO users(username,password_hash,dias,xtream_server,xtream_user,"
+                    "xtream_pass,playlist_url,access_token) VALUES(?,?,?,?,?,?,?,?)",
+                    (request.form.get("u","").strip(),
+                     generate_password_hash(request.form.get("p","").strip()),
+                     int(request.form.get("dias",30)),
+                     request.form.get("srv","").strip(),
+                     request.form.get("xu","").strip(),
+                     request.form.get("xp","").strip(),
+                     request.form.get("purl","").strip(),
+                     tok))
+                db.commit()
+                msg = f"✅ Usuário criado. Token: {tok}"
+            elif a == "update":
+                uid = int(request.form.get("uid"))
+                db.execute("UPDATE users SET xtream_server=?,xtream_user=?,xtream_pass=?,"
+                           "playlist_url=?,dias=? WHERE id=?",
+                    (request.form.get("srv","").strip(),
+                     request.form.get("xu","").strip(),
+                     request.form.get("xp","").strip(),
+                     request.form.get("purl","").strip(),
+                     int(request.form.get("dias",30)),
+                     uid))
+                db.commit()
+                _parse_cache.pop(uid, None)   # invalidate cache
+                msg = "✅ Usuário atualizado."
+            elif a == "token":
+                uid = int(request.form.get("uid"))
+                tok = _sec.token_urlsafe(24)
+                db.execute("UPDATE users SET access_token=? WHERE id=?", (tok, uid))
+                db.commit(); msg = f"✅ Token: {tok}"
+            elif a == "pwd":
+                uid = int(request.form.get("uid"))
+                p = request.form.get("p","").strip()
+                if len(p)<6: err="Senha mín 6 chars."
+                else:
+                    db.execute("UPDATE users SET password_hash=? WHERE id=?",
+                               (generate_password_hash(p), uid))
+                    db.commit(); msg="✅ Senha alterada."
+            elif a == "del":
+                uid = int(request.form.get("uid"))
+                db.execute("DELETE FROM users WHERE id=? AND is_admin=0", (uid,))
+                db.commit(); msg="✅ Excluído."
+        except Exception as e: err=str(e)
+    users = db.execute("SELECT * FROM users ORDER BY id").fetchall()
+    db.close()
+    return _page("admin", ADMIN_HTML, users=users, msg=msg, err=err, me=me())
+
+# ─── Helpers ─────────────────────────────────────────────────────────────────
+
+def _url_id(url):
+    return base64.urlsafe_b64encode(url.encode()).decode()[:32]
+
+def _page(name, tmpl, **ctx):
+    return render_template_string(BASE_HTML.replace("%%CONTENT%%", tmpl), **ctx)
+
+def _simple(icon, title, msg, link, ltext):
+    return render_template_string(SIMPLE_HTML, icon=icon, title=title,
+                                  msg=msg, link=link, ltext=ltext)
+
+# ─── HTML Templates ──────────────────────────────────────────────────────────
+
+CSS = r"""
+:root{
+  --bg:#09090f;--bg2:#111118;--bg3:#1a1a24;--bg4:#22222e;
+  --border:rgba(255,255,255,.07);--text:#eeeef5;--muted:#666;
+  --accent:#e8183a;--accent2:#ff5533;--gold:#f5c518;
+  --r:10px;--font:'Segoe UI',system-ui,sans-serif;
 }
 *{box-sizing:border-box;margin:0;padding:0}
 html{scroll-behavior:smooth}
-body{background:var(--bg);color:var(--text);font-family:var(--font);min-height:100vh;
-     -webkit-tap-highlight-color:transparent}
+body{background:var(--bg);color:var(--text);font-family:var(--font);
+     min-height:100vh;overflow-x:hidden;-webkit-tap-highlight-color:transparent}
+a{color:inherit;text-decoration:none}
+img{display:block}
 
-/* Header */
-.header{position:sticky;top:0;z-index:100;background:rgba(8,8,15,.92);
-        backdrop-filter:blur(20px);border-bottom:1px solid var(--border);
-        padding:.6rem 1.2rem;display:flex;align-items:center;gap:.8rem;flex-wrap:wrap}
-.logo{font-size:1.3rem;font-weight:800;background:linear-gradient(135deg,var(--accent),var(--accent2));
-      -webkit-background-clip:text;-webkit-text-fill-color:transparent;text-decoration:none;
-      flex-shrink:0;letter-spacing:-.5px}
-.header-search{flex:1;min-width:140px;max-width:340px}
-.header-search input{width:100%;background:var(--bg3);border:1px solid var(--border);
-  border-radius:24px;padding:.4rem 1rem;color:var(--text);font-size:.85rem;outline:none}
-.header-search input:focus{border-color:var(--accent)}
-.nav-links{display:flex;gap:.2rem;flex-wrap:wrap}
-.nav-link{color:var(--muted);text-decoration:none;padding:.35rem .7rem;border-radius:8px;
-          font-size:.82rem;transition:all .15s}
-.nav-link:hover,.nav-link.active{background:var(--bg3);color:var(--text)}
-.user-chip{margin-left:auto;display:flex;align-items:center;gap:.5rem;flex-shrink:0}
-.user-chip span{font-size:.8rem;color:var(--muted);display:none}
-@media(min-width:480px){.user-chip span{display:inline}}
-.btn-sm{background:var(--bg3);border:1px solid var(--border);color:var(--text);
-        border-radius:8px;padding:.35rem .8rem;font-size:.78rem;cursor:pointer;
-        text-decoration:none;transition:all .15s;white-space:nowrap}
-.btn-sm:hover{border-color:var(--accent);color:var(--accent)}
-.btn-accent{background:var(--accent);border-color:var(--accent);color:#fff}
-.btn-accent:hover{opacity:.85;color:#fff}
+/* ── TOPBAR ── */
+.topbar{
+  position:fixed;top:0;left:0;right:0;z-index:200;
+  background:rgba(9,9,15,.95);backdrop-filter:blur(16px);
+  border-bottom:1px solid var(--border);
+  height:56px;display:flex;align-items:center;padding:0 1rem;gap:.8rem;
+}
+.logo{font-size:1.4rem;font-weight:900;letter-spacing:-1px;flex-shrink:0;
+      background:linear-gradient(135deg,var(--accent),var(--accent2));
+      -webkit-background-clip:text;-webkit-text-fill-color:transparent}
+.topbar-search{flex:1;max-width:320px;position:relative}
+.topbar-search input{
+  width:100%;background:var(--bg3);border:1px solid var(--border);
+  border-radius:20px;padding:.35rem 1rem .35rem 2.2rem;
+  color:var(--text);font-size:.82rem;outline:none;
+}
+.topbar-search input:focus{border-color:var(--accent)}
+.topbar-search::before{content:"🔍";position:absolute;left:.7rem;top:50%;
+  transform:translateY(-50%);font-size:.75rem;pointer-events:none}
+.topbar-right{margin-left:auto;display:flex;align-items:center;gap:.5rem}
+.topbar-user{font-size:.78rem;color:var(--muted);display:none}
+@media(min-width:500px){.topbar-user{display:block}}
+.tbtn{
+  background:var(--bg3);border:1px solid var(--border);color:var(--text);
+  border-radius:8px;padding:.3rem .7rem;font-size:.75rem;cursor:pointer;
+  white-space:nowrap;transition:border-color .15s;
+}
+.tbtn:hover{border-color:var(--accent);color:var(--accent)}
+.tbtn-accent{background:var(--accent);border-color:var(--accent);color:#fff}
+.tbtn-accent:hover{opacity:.85;color:#fff}
 
-/* Cards grid */
-.page{padding:1rem;max-width:1400px;margin:0 auto}
-.section{margin-bottom:2rem}
-.section-title{font-size:1rem;font-weight:700;margin-bottom:.8rem;
-               display:flex;align-items:center;gap:.5rem;color:#fff}
-.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:.7rem}
-@media(max-width:480px){.grid{grid-template-columns:repeat(3,1fr);gap:.5rem}}
+/* ── LAYOUT ── */
+.shell{display:flex;padding-top:56px;min-height:100vh}
 
-.card{background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius);
-      overflow:hidden;cursor:pointer;transition:transform .15s,border-color .15s;
-      text-decoration:none;color:var(--text);display:block;position:relative}
-.card:hover{transform:translateY(-3px);border-color:rgba(230,57,80,.4)}
+/* ── SIDEBAR ── */
+.sidebar{
+  width:220px;flex-shrink:0;
+  background:var(--bg2);border-right:1px solid var(--border);
+  position:sticky;top:56px;height:calc(100vh - 56px);
+  overflow-y:auto;padding:.5rem 0;
+  scrollbar-width:thin;scrollbar-color:var(--bg4) transparent;
+}
+.sidebar::-webkit-scrollbar{width:4px}
+.sidebar::-webkit-scrollbar-thumb{background:var(--bg4);border-radius:2px}
+.sidebar-head{
+  padding:.5rem 1rem .4rem;font-size:.68rem;font-weight:700;
+  color:var(--muted);text-transform:uppercase;letter-spacing:.08em;
+}
+.cat-item{
+  display:block;padding:.48rem 1rem;font-size:.82rem;color:var(--muted);
+  cursor:pointer;transition:all .12s;border-left:3px solid transparent;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+}
+.cat-item:hover{background:var(--bg3);color:var(--text)}
+.cat-item.active{background:rgba(232,24,58,.08);color:var(--accent);
+                  border-left-color:var(--accent);font-weight:600}
+
+/* ── MAIN ── */
+.main{flex:1;min-width:0;padding:1rem}
+
+/* ── CARDS GRID ── */
+.grid{
+  display:grid;
+  grid-template-columns:repeat(auto-fill,minmax(150px,1fr));
+  gap:.65rem;
+}
+@media(max-width:500px){
+  .grid{grid-template-columns:repeat(3,1fr);gap:.4rem}
+}
+
+.card{
+  background:var(--bg2);border:1px solid var(--border);
+  border-radius:var(--r);overflow:hidden;cursor:pointer;
+  transition:transform .15s,border-color .15s,box-shadow .15s;
+}
+.card:hover{transform:translateY(-4px);border-color:rgba(232,24,58,.4);
+             box-shadow:0 8px 24px rgba(0,0,0,.4)}
 .card:active{transform:scale(.97)}
-.card-img{width:100%;aspect-ratio:2/3;object-fit:cover;background:var(--bg3);
-           display:block;transition:opacity .2s}
-.card-img.live{aspect-ratio:16/9}
-.card-body{padding:.5rem .6rem .6rem}
-.card-title{font-size:.75rem;font-weight:600;line-height:1.3;
-            overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;
-            -webkit-box-orient:vertical}
-.card-meta{font-size:.68rem;color:var(--muted);margin-top:.2rem}
-.card-badge{position:absolute;top:.4rem;right:.4rem;background:var(--accent);
-            color:#fff;font-size:.6rem;font-weight:700;padding:.15rem .4rem;
-            border-radius:4px;text-transform:uppercase}
-.card-badge.live{background:#22c55e;animation:pulse 2s infinite}
-@keyframes pulse{0%,100%{opacity:1}50%{opacity:.6}}
+.card-thumb{
+  width:100%;aspect-ratio:16/9;object-fit:cover;
+  background:var(--bg3);
+}
+.card-thumb.poster{aspect-ratio:2/3}
+.card-body{padding:.45rem .6rem .55rem}
+.card-name{
+  font-size:.72rem;font-weight:600;line-height:1.3;
+  overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;
+  -webkit-box-orient:vertical;
+}
+.card-sub{font-size:.65rem;color:var(--muted);margin-top:.15rem}
+.live-dot{
+  display:inline-block;width:6px;height:6px;background:#22c55e;
+  border-radius:50%;margin-right:4px;
+  animation:blink 1.5s ease-in-out infinite;
+}
+@keyframes blink{0%,100%{opacity:1}50%{opacity:.3}}
 
-/* Category pills */
-.cats{display:flex;gap:.4rem;flex-wrap:wrap;margin-bottom:1rem}
-.cat-pill{background:var(--bg3);border:1px solid var(--border);border-radius:20px;
-          padding:.3rem .8rem;font-size:.78rem;cursor:pointer;text-decoration:none;
-          color:var(--muted);transition:all .15s}
-.cat-pill:hover,.cat-pill.active{background:var(--accent);border-color:var(--accent);color:#fff}
+/* ── PLAYER PAGE ── */
+.watch-shell{
+  display:grid;grid-template-columns:1fr;gap:0;
+  padding-top:56px;height:100vh;overflow:hidden;
+}
+@media(min-width:900px){
+  .watch-shell{grid-template-columns:1fr 280px}
+}
+.player-area{
+  display:flex;flex-direction:column;background:#000;
+  height:calc(100vh - 56px);
+}
+.player-wrap{
+  flex:1;position:relative;background:#000;
+  display:flex;align-items:center;justify-content:center;
+}
+.player-wrap video{width:100%;height:100%;display:block;background:#000}
+.player-bar{
+  background:var(--bg2);border-top:1px solid var(--border);
+  padding:.5rem .8rem;display:flex;align-items:center;gap:.6rem;flex-wrap:wrap;
+}
+.player-title{font-size:.82rem;font-weight:600;flex:1;min-width:0;
+               white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.player-cat{font-size:.72rem;color:var(--muted)}
+.pl-list{
+  border-left:1px solid var(--border);background:var(--bg2);
+  overflow-y:auto;height:calc(100vh - 56px);
+}
+.pl-item{
+  padding:.55rem .8rem;border-bottom:1px solid var(--border);
+  cursor:pointer;display:flex;align-items:center;gap:.6rem;
+  transition:background .1s;
+}
+.pl-item:hover{background:var(--bg3)}
+.pl-item.active{background:rgba(232,24,58,.1);border-left:3px solid var(--accent)}
+.pl-thumb{
+  width:56px;height:32px;object-fit:cover;flex-shrink:0;
+  border-radius:4px;background:var(--bg4);
+}
+.pl-name{font-size:.75rem;font-weight:500;
+          overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;
+          -webkit-box-orient:vertical;line-height:1.3}
 
-/* Player */
-.player-wrap{background:#000;border-radius:var(--radius);overflow:hidden;
-             position:relative;aspect-ratio:16/9;width:100%}
-.player-wrap video{width:100%;height:100%;display:block}
-.watch-layout{display:grid;grid-template-columns:1fr;gap:1rem;max-width:1200px;margin:0 auto;padding:1rem}
-@media(min-width:900px){.watch-layout{grid-template-columns:1fr 320px}}
-.watch-info h1{font-size:1.2rem;margin-bottom:.5rem}
-.watch-desc{color:var(--muted);font-size:.85rem;line-height:1.5;margin:.5rem 0}
-.ep-list{background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius);
-         overflow-y:auto;max-height:500px}
-.ep-item{padding:.6rem .8rem;border-bottom:1px solid var(--border);cursor:pointer;
-         font-size:.82rem;display:flex;gap:.5rem;align-items:center;text-decoration:none;color:var(--text)}
-.ep-item:hover{background:var(--bg3)}
-.ep-item.active{border-left:3px solid var(--accent);background:rgba(230,57,80,.06)}
+/* ── NO LIST banner ── */
+.no-list{
+  background:var(--bg2);border:1px solid var(--border);border-radius:12px;
+  padding:2rem;text-align:center;max-width:500px;margin:2rem auto;
+}
+.no-list .icon{font-size:3rem;margin-bottom:.8rem}
+.no-list h2{font-size:1.1rem;margin-bottom:.4rem}
+.no-list p{color:var(--muted);font-size:.85rem;line-height:1.5}
 
-/* Forms */
-.form-wrap{max-width:480px;margin:2rem auto;padding:1rem}
-.card-form{background:var(--bg2);border:1px solid var(--border);border-radius:16px;padding:2rem}
-.form-title{font-size:1.2rem;font-weight:700;margin-bottom:1.2rem;text-align:center}
-.form-group{margin-bottom:.9rem}
-label{font-size:.75rem;color:var(--muted);display:block;margin-bottom:.25rem}
-input,select,textarea{width:100%;background:var(--bg);border:1px solid var(--border);
-  border-radius:8px;padding:.55rem .8rem;color:var(--text);font-size:.9rem;outline:none}
-input:focus,select:focus{border-color:var(--accent)}
-.btn-full{width:100%;background:var(--accent);color:#fff;border:none;border-radius:8px;
-          padding:.7rem;font-size:1rem;font-weight:700;cursor:pointer;margin-top:.5rem}
-.btn-full:hover{opacity:.88}
-.alert{padding:.6rem .9rem;border-radius:8px;font-size:.85rem;margin-bottom:1rem}
-.alert-error{background:rgba(230,57,80,.1);border:1px solid var(--accent);color:#ffa0b0}
-.alert-success{background:rgba(34,197,94,.1);border:1px solid #22c55e;color:#a0ffb0}
-.form-link{text-align:center;margin-top:1rem;font-size:.82rem;color:var(--muted)}
-.form-link a{color:var(--accent);text-decoration:none}
-
-/* Admin table */
-.table-wrap{overflow-x:auto;border-radius:var(--radius);border:1px solid var(--border)}
-table{width:100%;border-collapse:collapse;font-size:.8rem}
-th{background:var(--bg3);padding:.6rem .8rem;text-align:left;font-weight:600;
-   color:var(--muted);border-bottom:1px solid var(--border)}
-td{padding:.55rem .8rem;border-bottom:1px solid var(--border);vertical-align:top}
-tr:last-child td{border-bottom:none}
-tr:hover td{background:rgba(255,255,255,.02)}
-.badge{display:inline-block;padding:.15rem .45rem;border-radius:4px;font-size:.65rem;font-weight:700}
-.badge-admin{background:rgba(245,197,24,.15);color:var(--gold)}
-.badge-ok{background:rgba(34,197,94,.15);color:#22c55e}
-.badge-no{background:rgba(230,57,80,.1);color:var(--accent)}
-
-/* Home hero */
-.hero{background:linear-gradient(135deg,var(--bg2),var(--bg3));border:1px solid var(--border);
-      border-radius:16px;padding:1.5rem;margin-bottom:1.5rem;display:flex;
-      align-items:center;gap:1.2rem;flex-wrap:wrap}
-.hero-icon{font-size:3rem;flex-shrink:0}
-.hero h2{font-size:1.1rem;font-weight:700;margin-bottom:.3rem}
-.hero p{color:var(--muted);font-size:.85rem;line-height:1.5}
-.hero-actions{display:flex;gap:.5rem;flex-wrap:wrap;margin-top:.8rem}
-
-/* No content */
-.empty{text-align:center;padding:3rem 1rem;color:var(--muted)}
-.empty .icon{font-size:3rem;margin-bottom:.8rem}
-
-/* Pagination */
-.pagination{display:flex;gap:.3rem;justify-content:center;margin-top:1.5rem;flex-wrap:wrap}
-.page-btn{background:var(--bg3);border:1px solid var(--border);color:var(--muted);
-          padding:.35rem .7rem;border-radius:6px;font-size:.8rem;text-decoration:none}
-.page-btn.active,.page-btn:hover{background:var(--accent);border-color:var(--accent);color:#fff}
-
-/* Loading */
-.spinner{width:36px;height:36px;border:3px solid var(--border);border-top-color:var(--accent);
-         border-radius:50%;animation:spin .8s linear infinite;margin:2rem auto}
+/* ── LOADING OVERLAY ── */
+.loading{
+  position:fixed;inset:0;background:rgba(9,9,15,.85);
+  display:flex;align-items:center;justify-content:center;
+  z-index:999;flex-direction:column;gap:1rem;
+}
+.spinner{
+  width:40px;height:40px;border:3px solid var(--border);
+  border-top-color:var(--accent);border-radius:50%;
+  animation:spin .8s linear infinite;
+}
 @keyframes spin{to{transform:rotate(360deg)}}
 
-/* Mobile */
-@media(max-width:640px){
-  .header{padding:.5rem .8rem;gap:.5rem}
-  .nav-links{display:none}
-  .page{padding:.7rem}
-  .watch-layout{padding:.7rem}
+/* ── FORMS / ADMIN ── */
+.page-wrap{max-width:1200px;margin:0 auto;padding:1rem}
+.card-form{
+  background:var(--bg2);border:1px solid var(--border);
+  border-radius:14px;padding:1.5rem;max-width:440px;margin:2rem auto;
+}
+.form-title{font-size:1.1rem;font-weight:700;margin-bottom:1.2rem;text-align:center}
+.fg{margin-bottom:.8rem}
+label{font-size:.73rem;color:var(--muted);display:block;margin-bottom:.2rem}
+input,select{
+  width:100%;background:var(--bg);border:1px solid var(--border);
+  border-radius:7px;padding:.5rem .75rem;color:var(--text);
+  font-size:.88rem;outline:none;
+}
+input:focus,select:focus{border-color:var(--accent)}
+.btn{
+  background:var(--accent);color:#fff;border:none;border-radius:8px;
+  padding:.6rem 1.2rem;font-size:.88rem;font-weight:700;cursor:pointer;
+}
+.btn:hover{opacity:.88}
+.btn-full{width:100%;padding:.65rem;font-size:.95rem;margin-top:.3rem}
+.btn-ghost{background:var(--bg3);color:var(--text);border:1px solid var(--border)}
+.btn-ghost:hover{border-color:var(--accent)}
+.alert{padding:.55rem .85rem;border-radius:7px;font-size:.82rem;margin-bottom:.9rem}
+.alert-ok{background:rgba(34,197,94,.1);border:1px solid #22c55e;color:#86efac}
+.alert-err{background:rgba(232,24,58,.1);border:1px solid var(--accent);color:#fca5a5}
+
+/* ── ADMIN TABLE ── */
+.tbl-wrap{overflow-x:auto;border-radius:10px;border:1px solid var(--border);margin-top:1rem}
+table{width:100%;border-collapse:collapse;font-size:.78rem}
+th{background:var(--bg3);padding:.55rem .8rem;text-align:left;color:var(--muted);
+   font-weight:600;border-bottom:1px solid var(--border)}
+td{padding:.5rem .8rem;border-bottom:1px solid var(--border);vertical-align:top}
+tr:last-child td{border-bottom:none}
+tr:hover td{background:rgba(255,255,255,.015)}
+.badge{display:inline-block;padding:.12rem .4rem;border-radius:4px;
+       font-size:.62rem;font-weight:700}
+.b-admin{background:rgba(245,197,24,.15);color:var(--gold)}
+.b-ok{background:rgba(34,197,94,.12);color:#4ade80}
+.b-no{background:rgba(232,24,58,.1);color:var(--accent)}
+.inline-form{display:inline}
+.row-actions{display:flex;gap:.3rem;flex-wrap:wrap}
+.edit-panel{display:none;background:var(--bg3);border-radius:8px;
+            padding:.8rem;margin-top:.5rem}
+
+/* ── MOBILE SIDEBAR TOGGLE ── */
+.mob-toggle{display:none;background:none;border:none;font-size:1.3rem;
+             cursor:pointer;color:var(--text);padding:.1rem .2rem}
+@media(max-width:768px){
+  .mob-toggle{display:block}
+  .sidebar{
+    position:fixed;top:56px;left:0;bottom:0;z-index:150;
+    width:240px;transform:translateX(-100%);transition:transform .22s;
+  }
+  .sidebar.open{transform:none}
+  .mob-overlay{
+    display:none;position:fixed;inset:0;top:56px;
+    background:rgba(0,0,0,.55);z-index:149;
+  }
+  .mob-overlay.open{display:block}
 }
 """
 
-_HEAD = lambda title: f"""<!DOCTYPE html>
+BASE_HTML = """<!DOCTYPE html>
 <html lang="pt-BR">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1">
-<meta name="theme-color" content="#08080f">
+<meta name="theme-color" content="#09090f">
 <meta name="apple-mobile-web-app-capable" content="yes">
-<title>{title} — MedFlix</title>
-<style>{_CSS}</style>
+<title>MedFlix</title>
+<style>""" + CSS + """</style>
 </head>
 <body>
-"""
+%%CONTENT%%
+<script>
+// Mobile sidebar
+function toggleSidebar(){
+  var s=document.getElementById('sidebar');
+  var o=document.getElementById('mob-overlay');
+  if(s){s.classList.toggle('open'); if(o) o.classList.toggle('open');}
+}
+// Close on overlay click
+var ov=document.getElementById('mob-overlay');
+if(ov) ov.addEventListener('click',function(){
+  document.getElementById('sidebar').classList.remove('open');
+  ov.classList.remove('open');
+});
+</script>
+</body>
+</html>"""
 
-_HEADER = """
-<header class="header">
-  <a class="logo" href="/home">🎬 MedFlix</a>
-  <form class="header-search" action="/search" method="get">
-    <input name="q" placeholder="Buscar filmes, séries, canais..." value="{{ request.args.get('q','') }}" autocomplete="off">
+# ── TV (main browsing page) ──
+TV_HTML = """
+<div class="topbar">
+  <button class="mob-toggle" onclick="toggleSidebar()">☰</button>
+  <a class="logo" href="/tv">🎬MedFlix</a>
+  <form class="topbar-search" action="/tv" method="get">
+    {% if genre %}<input type="hidden" name="genre" value="{{ genre }}">{% endif %}
+    <input name="q" value="{{ q }}" placeholder="Buscar..." autocomplete="off">
   </form>
-  <nav class="nav-links">
-    <a class="nav-link" href="/browse/live">📡 Ao Vivo</a>
-    <a class="nav-link" href="/browse/vod">🎬 Filmes</a>
-    <a class="nav-link" href="/browse/series">📺 Séries</a>
-  </nav>
-  <div class="user-chip">
-    <span>{{ u.username if u else '' }}</span>
-    {% if u and u.is_admin %}<a class="btn-sm" href="/admin">⚙️ Admin</a>{% endif %}
-    <a class="btn-sm" href="/logout">Sair</a>
-  </div>
-</header>
-"""
-
-LOGIN_HTML = _HEAD("Login") + """
-<div class="form-wrap">
-  <div class="card-form">
-    <div style="text-align:center;margin-bottom:1.5rem">
-      <div style="font-size:3rem">🎬</div>
-      <div style="font-size:1.4rem;font-weight:800;background:linear-gradient(135deg,#e63950,#ff6b35);
-                  -webkit-background-clip:text;-webkit-text-fill-color:transparent;margin-top:.3rem">
-        MedFlix
-      </div>
-      <div style="color:var(--muted);font-size:.82rem;margin-top:.3rem">Sua biblioteca digital personalizada</div>
-    </div>
-    {% if error %}<div class="alert alert-error">{{ error }}</div>{% endif %}
-    <form method="post">
-      <div class="form-group">
-        <label>USUÁRIO</label>
-        <input name="username" placeholder="seu usuário" required autocomplete="username" autofocus>
-      </div>
-      <div class="form-group">
-        <label>SENHA</label>
-        <input name="password" type="password" placeholder="••••••••" required autocomplete="current-password">
-      </div>
-      <button class="btn-full" type="submit">Entrar</button>
-    </form>
-    <div class="form-link" style="margin-top:1.5rem;font-size:.75rem;opacity:.5">
-      Não tem acesso? Entre em contato com o administrador.
-    </div>
+  <div class="topbar-right">
+    <span class="topbar-user">{{ u.username }}</span>
+    {% if u.is_admin %}<a class="tbtn" href="/admin">⚙️ Admin</a>{% endif %}
+    <a class="tbtn" id="reload-btn" href="#" onclick="reloadList(event)">🔄</a>
+    <a class="tbtn" href="/logout">Sair</a>
   </div>
 </div>
-</body></html>"""
+<div class="mob-overlay" id="mob-overlay"></div>
 
-HOME_HTML = _HEAD("Início") + _HEADER + """
-<div class="page">
-{% if not has_content %}
-  <div class="hero">
-    <div class="hero-icon">📡</div>
-    <div style="flex:1">
-      <h2>Configure sua lista de canais</h2>
-      <p>Sua conta ainda não tem um servidor IPTV ou URL M3U vinculado.<br>
-         Entre em contato com o administrador para vincular sua assinatura.</p>
-      {% if u and u.is_admin %}
-      <div class="hero-actions">
-        <a class="btn-sm btn-accent" href="/admin">⚙️ Configurar no painel admin</a>
-      </div>
+<div class="shell">
+  <!-- SIDEBAR -->
+  <nav class="sidebar" id="sidebar">
+    <div class="sidebar-head">Gêneros</div>
+    <a class="cat-item {{ 'active' if not genre else '' }}" href="/tv">
+      🏠 Todos <span style="float:right;font-size:.65rem;color:var(--muted)">{{ channels|length if not genre else (genre_counts.values()|sum) }}</span>
+    </a>
+    {% for gid, gname in genres %}
+    {% if genre_counts.get(gid, 0) > 0 %}
+    <a class="cat-item {{ 'active' if genre==gid else '' }}" href="/tv?genre={{ gid }}">
+      {{ gname }}
+      <span style="float:right;font-size:.65rem;color:var(--muted)">{{ genre_counts.get(gid,0) }}</span>
+    </a>
+    {% endif %}
+    {% endfor %}
+
+    {% if subcats %}
+    <div class="sidebar-head" style="margin-top:.8rem">Categorias</div>
+    <a class="cat-item {{ 'active' if not subcat else '' }}"
+       href="/tv?genre={{ genre }}">Todas</a>
+    {% for cid, cname in subcats %}
+    <a class="cat-item {{ 'active' if subcat==cid else '' }}"
+       href="/tv?genre={{ genre }}&cat={{ cid }}">{{ cname }}</a>
+    {% endfor %}
+    {% endif %}
+  </nav>
+
+  <!-- MAIN -->
+  <main class="main">
+    {% if not has_list %}
+    <div class="no-list">
+      <div class="icon">📡</div>
+      <h2>Lista não configurada</h2>
+      <p>Sua conta ainda não tem uma lista IPTV vinculada.<br>
+         Entre em contato com o administrador.</p>
+      {% if u.is_admin %}
+      <a href="/admin" class="btn" style="display:inline-block;margin-top:1rem">⚙️ Configurar agora</a>
       {% endif %}
     </div>
-  </div>
-{% else %}
-  {% if account_info %}
-  <div style="background:var(--bg2);border:1px solid var(--border);border-radius:12px;
-              padding:.8rem 1.2rem;margin-bottom:1.5rem;display:flex;align-items:center;
-              gap:1rem;flex-wrap:wrap;font-size:.82rem">
-    <span style="color:var(--muted)">📡 Servidor conectado</span>
-    <span class="badge badge-ok">✓ Online</span>
-    {% if account_info.get('exp_date') %}
-    <span style="color:var(--muted)">Validade: <strong style="color:var(--text)">
-      {{ account_info.exp_date }}</strong></span>
+
+    {% elif not channels %}
+    <div class="no-list">
+      <div class="icon">🔍</div>
+      <h2>Sem resultados</h2>
+      <p>Tente outra categoria ou busca.</p>
+      <a href="/tv" style="color:var(--accent);font-size:.85rem">← Voltar ao início</a>
+    </div>
+
+    {% else %}
+    {% if genre or q %}
+    <div style="margin-bottom:.8rem;font-size:.82rem;color:var(--muted);display:flex;align-items:center;gap:.8rem">
+      <span>{{ channels|length }} itens</span>
+      {% if genre %}<a href="/tv" style="color:var(--accent)">✕ Limpar filtro</a>{% endif %}
+    </div>
     {% endif %}
-    {% if account_info.get('max_connections') %}
-    <span style="color:var(--muted)">Conexões: {{ account_info.get('active_cons',0) }}/{{ account_info.max_connections }}</span>
-    {% endif %}
-    <a class="btn-sm" href="/api/clear-cache" style="margin-left:auto">🔄 Atualizar</a>
-  </div>
-  {% endif %}
 
-  <div class="section">
-    <div class="section-title">📡 Ao Vivo
-      <a class="btn-sm" href="/browse/live" style="margin-left:auto;font-size:.75rem">Ver todos</a>
-    </div>
-    <div class="cats">
-      {% for cat in (live_cats or [])[:12] %}
-      <a class="cat-pill" href="/browse/live?cat={{ cat.category_id }}&cat_name={{ cat.category_name|urlencode }}">
-        {{ cat.category_name }}
-      </a>
-      {% endfor %}
-    </div>
-  </div>
-
-  <div class="section">
-    <div class="section-title">🎬 Filmes
-      <a class="btn-sm" href="/browse/vod" style="margin-left:auto;font-size:.75rem">Ver todos</a>
-    </div>
-    <div class="cats">
-      {% for cat in (vod_cats or [])[:12] %}
-      <a class="cat-pill" href="/browse/vod?cat={{ cat.category_id }}&cat_name={{ cat.category_name|urlencode }}">
-        {{ cat.category_name }}
-      </a>
-      {% endfor %}
-    </div>
-  </div>
-
-  <div class="section">
-    <div class="section-title">📺 Séries
-      <a class="btn-sm" href="/browse/series" style="margin-left:auto;font-size:.75rem">Ver todos</a>
-    </div>
-    <div class="cats">
-      {% for cat in (series_cats or [])[:12] %}
-      <a class="cat-pill" href="/browse/series?cat={{ cat.category_id }}&cat_name={{ cat.category_name|urlencode }}">
-        {{ cat.category_name }}
-      </a>
-      {% endfor %}
-    </div>
-  </div>
-{% endif %}
-</div>
-</body></html>"""
-
-BROWSE_HTML = _HEAD("{{ category_name }}") + _HEADER + """
-<div class="page">
-  <div style="display:flex;align-items:center;gap:.8rem;margin-bottom:1rem;flex-wrap:wrap">
-    <h1 style="font-size:1.1rem">
-      {{ '📡' if content_type=='live' else ('🎬' if content_type=='vod' else '📺') }}
-      {{ category_name }}
-    </h1>
-    <span style="color:var(--muted);font-size:.82rem">{{ total }} itens</span>
-    <a href="/browse/{{ content_type }}" class="btn-sm" style="margin-left:auto">Todas as categorias</a>
-  </div>
-
-  {% if not items %}
-    <div class="empty"><div class="icon">📭</div><p>Nenhum item encontrado.</p></div>
-  {% else %}
-    <div class="grid">
-    {% for item in items %}
-      {% set name = item.get('name') or item.get('title','') %}
-      {% set cover = item.get('stream_icon') or item.get('cover') or '' %}
-      {% set sid = item.get('stream_id') or item.get('series_id') or '' %}
-      {% set ext = item.get('container_extension','ts') %}
-      <a class="card" href="/watch/{{ content_type }}/{{ sid }}?title={{ name|urlencode }}&cover={{ cover|urlencode }}&cat={{ category_id }}">
-        <img class="card-img {{ 'live' if content_type=='live' else '' }}"
-             src="{{ cover }}" alt="{{ name }}"
-             loading="lazy"
-             onerror="this.src='';this.style.background='#161625'">
-        {% if content_type=='live' %}<span class="card-badge live">AO VIVO</span>{% endif %}
+    <div class="grid" id="grid">
+      {% for ch in channels %}
+      {% set sid = ch.stream_url | b64id %}
+      <a class="card" href="/watch?s={{ sid }}&genre={{ ch.genre }}">
+        <img class="card-thumb {{ 'poster' if ch.genre in ['filmes','series','infantil','docs'] else '' }}"
+             src="{{ ch.logo }}" alt="{{ ch.name }}" loading="lazy"
+             onerror="this.src='';this.style.background='#1a1a24'">
         <div class="card-body">
-          <div class="card-title">{{ name }}</div>
-          {% if item.get('rating') %}<div class="card-meta">⭐ {{ item.rating }}</div>{% endif %}
-          {% if item.get('releaseDate') or item.get('year') %}
-          <div class="card-meta">{{ item.get('releaseDate') or item.get('year','') }}</div>
+          <div class="card-name">
+            {% if ch.genre=='live' %}<span class="live-dot"></span>{% endif %}
+            {{ ch.name }}
+          </div>
+          {% if ch.cat_name %}
+          <div class="card-sub">{{ ch.cat_name }}</div>
           {% endif %}
         </div>
       </a>
-    {% endfor %}
-    </div>
-
-    {% if total_pages > 1 %}
-    <div class="pagination">
-      {% if page > 1 %}
-      <a class="page-btn" href="?cat={{ category_id }}&cat_name={{ category_name|urlencode }}&p={{ page-1 }}">‹ Anterior</a>
-      {% endif %}
-      {% for pg in range([1,page-2]|max, [total_pages+1,page+3]|min) %}
-      <a class="page-btn {{ 'active' if pg==page else '' }}" href="?cat={{ category_id }}&cat_name={{ category_name|urlencode }}&p={{ pg }}">{{ pg }}</a>
-      {% endfor %}
-      {% if page < total_pages %}
-      <a class="page-btn" href="?cat={{ category_id }}&cat_name={{ category_name|urlencode }}&p={{ page+1 }}">Próximo ›</a>
-      {% endif %}
-    </div>
-    {% endif %}
-  {% endif %}
-</div>
-</body></html>"""
-
-WATCH_HTML = _HEAD("{{ title or 'Assistir' }}") + _HEADER + """
-<div class="watch-layout">
-  <div>
-    <div class="player-wrap">
-      {% if stream_url %}
-      <video id="player" controls autoplay playsinline>
-        <source src="{{ stream_url }}" type="{{ 'video/mp4' if content_type=='vod' else 'application/x-mpegURL' }}">
-        Seu navegador não suporta este formato.
-      </video>
-      {% else %}
-      <div style="display:flex;align-items:center;justify-content:center;height:100%;color:var(--muted)">
-        <div style="text-align:center"><div style="font-size:2rem">⚠️</div><p>Stream não disponível</p></div>
-      </div>
-      {% endif %}
-    </div>
-
-    {% if stream_url and content_type == 'live' %}
-    <div style="margin-top:.5rem;display:flex;gap:.5rem;flex-wrap:wrap">
-      <button onclick="switchExt('ts')" class="btn-sm">TS</button>
-      <button onclick="switchExt('m3u8')" class="btn-sm">M3U8</button>
-      <span style="color:var(--muted);font-size:.78rem;align-self:center;margin-left:auto">
-        Se não carregar, tente outro formato
-      </span>
-    </div>
-    {% endif %}
-
-    <div style="margin-top:1rem">
-      <h1 style="font-size:1.1rem;margin-bottom:.4rem">{{ title }}</h1>
-      {% if info.get('description') or info.get('plot') %}
-      <p class="watch-desc">{{ info.get('description') or info.get('plot','') }}</p>
-      {% endif %}
-      {% if info.get('genre') %}
-      <div style="font-size:.78rem;color:var(--muted);margin-top:.3rem">🎭 {{ info.genre }}</div>
-      {% endif %}
-      {% if info.get('director') %}
-      <div style="font-size:.78rem;color:var(--muted)">🎬 {{ info.director }}</div>
-      {% endif %}
-      {% if info.get('cast') %}
-      <div style="font-size:.78rem;color:var(--muted)">👥 {{ info.cast[:100] }}</div>
-      {% endif %}
-    </div>
-  </div>
-
-  {% if episodes %}
-  <div>
-    <div style="font-weight:600;margin-bottom:.5rem;font-size:.9rem">📋 Episódios</div>
-    <div class="ep-list">
-      {% for ep in episodes %}
-      {% set ep_id = ep.get('id','') %}
-      {% set ep_ext = ep.get('container_extension','mp4') %}
-      {% set ep_title = ep.get('title','') or ('Ep. ' ~ ep.get('episode_num','')) %}
-      <a class="ep-item {{ 'active' if ep_id|string == stream_id|string else '' }}"
-         href="/watch/series/{{ ep_id }}/ep/{{ ep_id }}?ext={{ ep_ext }}&title={{ ep_title|urlencode }}&cover={{ cover|urlencode }}">
-        <span style="color:var(--muted);flex-shrink:0">S{{ ep._season }}E{{ ep.get('episode_num','') }}</span>
-        <span>{{ ep_title }}</span>
-      </a>
       {% endfor %}
     </div>
-  </div>
-  {% endif %}
+    {% endif %}
+  </main>
 </div>
 
 <script>
-// HLS support via hls.js CDN
-var video = document.getElementById('player');
-var streamUrl = {{ (stream_url or '')|tojson }};
-
-if(video && streamUrl) {
-  function tryHls(url) {
-    if(typeof Hls !== 'undefined' && Hls.isSupported()) {
-      var hls = new Hls({maxBufferLength:30, enableWorker:false});
-      hls.loadSource(url);
-      hls.attachMedia(video);
-    } else if(video.canPlayType('application/vnd.apple.mpegurl')) {
-      video.src = url;
-    }
-  }
-  
-  var isHls = streamUrl.includes('.m3u8') || streamUrl.includes('/live/') || streamUrl.endsWith('.ts');
-  if(isHls) {
-    var script = document.createElement('script');
-    script.src = 'https://cdnjs.cloudflare.com/ajax/libs/hls.js/1.4.12/hls.min.js';
-    script.onload = function() { tryHls(streamUrl); };
-    document.head.appendChild(script);
-  }
-}
-
-function switchExt(ext) {
-  var base = streamUrl.substring(0, streamUrl.lastIndexOf('.'));
-  var newUrl = base + '.' + ext;
-  if(video) { video.pause(); video.src = newUrl; video.load(); video.play().catch(function(){}); }
+function reloadList(e) {
+  e.preventDefault();
+  var btn = document.getElementById('reload-btn');
+  btn.textContent = '⏳';
+  fetch('/api/reload').then(function(){ location.reload(); });
 }
 </script>
-</body></html>"""
+"""
 
-SEARCH_HTML = _HEAD("Buscar") + _HEADER + """
-<div class="page">
-  <form action="/search" method="get" style="margin-bottom:1rem">
-    <div style="display:flex;gap:.5rem;max-width:500px">
-      <input name="q" value="{{ q }}" placeholder="Buscar..." style="flex:1" autofocus>
-      <button class="btn-sm btn-accent" type="submit">Buscar</button>
+# ── WATCH page ──
+WATCH_HTML = """
+<div class="topbar">
+  <button class="mob-toggle" onclick="togglePlaylist()">☰</button>
+  <a class="logo" href="/tv">🎬MedFlix</a>
+  <span class="topbar-user" style="flex:1;padding-left:.5rem;font-size:.82rem;
+        color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
+    {{ ch.name }}
+  </span>
+  <div class="topbar-right">
+    <a class="tbtn" href="/tv?genre={{ genre }}">← Voltar</a>
+    <a class="tbtn" href="/logout">Sair</a>
+  </div>
+</div>
+
+<div class="watch-shell">
+  <div class="player-area">
+    <div class="player-wrap">
+      <video id="vid" autoplay playsinline controls
+             style="max-height:calc(100vh - 56px - 52px);width:100%"></video>
     </div>
-  </form>
+    <div class="player-bar">
+      <div>
+        <div class="player-title">{{ ch.name }}</div>
+        <div class="player-cat">{{ ch.cat_name }}</div>
+      </div>
+      <div style="margin-left:auto;display:flex;gap:.4rem;flex-wrap:wrap">
+        {% if ch.ctype=='live' %}
+        <button class="tbtn" onclick="switchExt('ts')">TS</button>
+        <button class="tbtn" onclick="switchExt('m3u8')">M3U8</button>
+        {% endif %}
+        <button class="tbtn" onclick="toggleFull()">⛶</button>
+      </div>
+    </div>
+  </div>
 
-  {% if q and not results %}
-  <div class="empty"><div class="icon">🔍</div><p>Nenhum resultado para "{{ q }}".</p></div>
-  {% elif results %}
-  <p style="color:var(--muted);font-size:.82rem;margin-bottom:.8rem">{{ results|length }} resultados para "{{ q }}"</p>
-  <div class="grid">
-    {% for item in results %}
-    {% set name = item.get('name') or item.get('title','') %}
-    {% set cover = item.get('stream_icon') or item.get('cover') or '' %}
-    {% set sid = item.get('stream_id') or item.get('series_id') or '' %}
-    {% set ctype = item.get('_type','vod') %}
-    <a class="card" href="/watch/{{ ctype }}/{{ sid }}?title={{ name|urlencode }}&cover={{ cover|urlencode }}">
-      <img class="card-img" src="{{ cover }}" alt="{{ name }}" loading="lazy"
-           onerror="this.src='';this.style.background='#161625'">
-      <div class="card-badge">{{ ctype|upper }}</div>
-      <div class="card-body">
-        <div class="card-title">{{ name }}</div>
+  <div class="pl-list" id="pl-list">
+    {% for item in playlist %}
+    {% set sid = item.stream_url | b64id %}
+    <div class="pl-item {{ 'active' if item.stream_url == ch.stream_url else '' }}"
+         onclick="playItem('{{ item.stream_url | e }}','{{ item.name | e }}','{{ item.ext }}')">
+      <img class="pl-thumb" src="{{ item.logo }}" alt="" loading="lazy"
+           onerror="this.src='';this.style.background='#22222e'">
+      <div class="pl-name">
+        {% if item.ctype=='live' %}<span class="live-dot"></span>{% endif %}
+        {{ item.name }}
       </div>
     </a>
     {% endfor %}
   </div>
-  {% else %}
-  <div class="empty"><div class="icon">🔍</div><p>Digite algo para buscar em toda sua biblioteca.</p></div>
-  {% endif %}
 </div>
-</body></html>"""
 
-ADMIN_HTML = _HEAD("Admin") + _HEADER + """
-<div class="page">
-  <h1 style="font-size:1.2rem;margin-bottom:1.2rem">⚙️ Painel Admin — Gerenciar Usuários</h1>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/hls.js/1.4.12/hls.min.js"></script>
+<script>
+var vid = document.getElementById('vid');
+var currentUrl = {{ ch.stream_url | tojson }};
+var currentExt = {{ ch.ext | tojson }};
+var hls = null;
 
-  {% if msg %}<div class="alert alert-success">{{ msg }}</div>{% endif %}
-  {% if error %}<div class="alert alert-error">{{ error }}</div>{% endif %}
+function loadStream(url, ext) {
+  if(hls){ hls.destroy(); hls = null; }
+  vid.pause();
 
-  <!-- Create User -->
+  var isHls = url.includes('.m3u8') || ext === 'm3u8' ||
+              url.includes('/live/') || ext === 'ts';
+
+  if(isHls && typeof Hls !== 'undefined' && Hls.isSupported()){
+    hls = new Hls({
+      maxBufferLength: 30,
+      maxMaxBufferLength: 60,
+      enableWorker: false,
+      lowLatencyMode: true,
+    });
+    hls.loadSource(url);
+    hls.attachMedia(vid);
+    hls.on(Hls.Events.MANIFEST_PARSED, function(){ vid.play().catch(function(){}); });
+    hls.on(Hls.Events.ERROR, function(e, d){
+      if(d.fatal && d.type === Hls.ErrorTypes.NETWORK_ERROR){
+        setTimeout(function(){ hls.startLoad(); }, 2000);
+      }
+    });
+  } else if(vid.canPlayType('application/vnd.apple.mpegurl') && isHls){
+    vid.src = url;
+    vid.load();
+    vid.play().catch(function(){});
+  } else {
+    vid.src = url;
+    vid.load();
+    vid.play().catch(function(){});
+  }
+}
+
+function playItem(url, name, ext){
+  currentUrl = url; currentExt = ext;
+  // Update active class
+  document.querySelectorAll('.pl-item').forEach(function(el){el.classList.remove('active')});
+  event.currentTarget.classList.add('active');
+  // Update title
+  document.querySelector('.player-title').textContent = name;
+  loadStream(url, ext);
+}
+
+function switchExt(ext){
+  var base = currentUrl.lastIndexOf('.') > currentUrl.lastIndexOf('/') ?
+             currentUrl.substring(0, currentUrl.lastIndexOf('.')) : currentUrl;
+  var newUrl = base + '.' + ext;
+  currentExt = ext; currentUrl = newUrl;
+  loadStream(newUrl, ext);
+}
+
+function toggleFull(){
+  var el = document.querySelector('.watch-shell');
+  if(!document.fullscreenElement) el.requestFullscreen().catch(function(){
+    vid.requestFullscreen().catch(function(){});
+  });
+  else document.exitFullscreen();
+}
+
+function togglePlaylist(){
+  var pl = document.getElementById('pl-list');
+  pl.style.display = pl.style.display === 'none' ? '' : 'none';
+}
+
+// Initial load
+loadStream(currentUrl, currentExt);
+
+// Scroll active item into view
+var active = document.querySelector('.pl-item.active');
+if(active) active.scrollIntoView({block:'center'});
+</script>
+"""
+
+LOGIN_HTML = """
+<div class="card-form" style="margin-top:3rem">
+  <div style="text-align:center;margin-bottom:1.5rem">
+    <div style="font-size:2.8rem">🎬</div>
+    <div style="font-size:1.5rem;font-weight:900;letter-spacing:-1px;
+                background:linear-gradient(135deg,#e8183a,#ff5533);
+                -webkit-background-clip:text;-webkit-text-fill-color:transparent">
+      MedFlix
+    </div>
+    <div style="color:var(--muted);font-size:.8rem;margin-top:.2rem">Sua biblioteca digital</div>
+  </div>
+  {% if err %}<div class="alert alert-err">{{ err }}</div>{% endif %}
+  <form method="post">
+    <div class="fg"><label>USUÁRIO</label>
+      <input name="username" placeholder="seu usuário" required autofocus autocomplete="username"></div>
+    <div class="fg"><label>SENHA</label>
+      <input name="password" type="password" placeholder="••••••••" required autocomplete="current-password"></div>
+    <button class="btn btn-full" type="submit">Entrar</button>
+  </form>
+  <div style="text-align:center;margin-top:1.2rem;font-size:.73rem;color:var(--muted)">
+    Não tem acesso? Fale com o administrador.
+  </div>
+</div>
+"""
+
+ADMIN_HTML = """
+<div class="topbar">
+  <a class="logo" href="/tv">🎬MedFlix</a>
+  <span style="color:var(--muted);font-size:.82rem;margin-left:.5rem">/ Admin</span>
+  <div class="topbar-right">
+    <a class="tbtn" href="/tv">← Player</a>
+    <a class="tbtn" href="/logout">Sair</a>
+  </div>
+</div>
+<div style="padding-top:56px">
+<div class="page-wrap">
+  <h1 style="font-size:1.2rem;margin:1rem 0">⚙️ Painel Admin</h1>
+
+  {% if msg %}<div class="alert alert-ok">{{ msg }}</div>{% endif %}
+  {% if err %}<div class="alert alert-err">{{ err }}</div>{% endif %}
+
+  <!-- CREATE USER -->
   <div style="background:var(--bg2);border:1px solid var(--border);border-radius:12px;padding:1.2rem;margin-bottom:1.5rem">
-    <h2 style="font-size:.95rem;margin-bottom:1rem">➕ Criar Novo Usuário</h2>
+    <h2 style="font-size:.95rem;margin-bottom:1rem;color:var(--text)">➕ Criar usuário + vincular lista</h2>
     <form method="post">
-      <input type="hidden" name="action" value="create">
+      <input type="hidden" name="a" value="create">
       <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:.6rem;margin-bottom:.8rem">
-        <div><label>Usuário *</label><input name="username" required placeholder="joao123"></div>
-        <div><label>Senha *</label><input name="password" type="password" required placeholder="mín 6 chars"></div>
-        <div><label>E-mail</label><input name="email" type="email" placeholder="joao@email.com"></div>
+        <div><label>Usuário *</label><input name="u" required placeholder="joao123"></div>
+        <div><label>Senha *</label><input name="p" type="password" required placeholder="mín 6"></div>
         <div><label>Dias de acesso</label><input name="dias" type="number" value="30" min="1"></div>
       </div>
-      <div style="background:rgba(230,57,80,.05);border:1px solid rgba(230,57,80,.15);border-radius:8px;padding:.8rem;margin-bottom:.8rem">
-        <p style="font-size:.75rem;color:var(--muted);margin-bottom:.6rem">
-          🔑 <strong style="color:var(--text)">Credenciais Xtream Codes</strong> — preencha para vincular a assinatura IPTV do usuário
+
+      <div style="background:rgba(232,24,58,.05);border:1px solid rgba(232,24,58,.2);
+                  border-radius:8px;padding:.9rem;margin-bottom:.8rem">
+        <p style="font-size:.75rem;color:var(--muted);margin-bottom:.7rem">
+          🔑 <strong style="color:var(--text)">Vincular assinatura IPTV</strong>
+          — Xtream Codes <em>ou</em> URL M3U direto
         </p>
-        <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:.6rem">
-          <div><label>Servidor IPTV</label><input name="xtream_server" placeholder="http://fastp150.com"></div>
-          <div><label>Usuário IPTV</label><input name="xtream_user" placeholder="dcs17966"></div>
-          <div><label>Senha IPTV</label><input name="xtream_pass" placeholder="29665wru"></div>
-          <div><label>URL M3U (alternativa)</label><input name="playlist_url" placeholder="http://...m3u"></div>
+        <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:.6rem">
+          <div>
+            <label>Servidor Xtream (ex: http://fastp150.com)</label>
+            <input name="srv" placeholder="http://fastp150.com">
+          </div>
+          <div>
+            <label>Usuário Xtream</label>
+            <input name="xu" placeholder="dcs17966">
+          </div>
+          <div>
+            <label>Senha Xtream</label>
+            <input name="xp" placeholder="29665wru">
+          </div>
+          <div>
+            <label>— OU — URL M3U direta</label>
+            <input name="purl" placeholder="http://servidor.com/lista.m3u">
+          </div>
         </div>
       </div>
-      <button class="btn-sm btn-accent" type="submit">Criar Usuário</button>
+      <button class="btn" type="submit">Criar Usuário</button>
     </form>
   </div>
 
-  <!-- Users table -->
-  <div class="table-wrap">
+  <!-- USERS TABLE -->
+  <div class="tbl-wrap">
     <table>
       <thead>
         <tr>
-          <th>#</th><th>Usuário</th><th>Servidor IPTV</th>
-          <th>Validade</th><th>Token de Acesso</th><th>Ações</th>
+          <th>#</th><th>Usuário</th><th>Lista IPTV vinculada</th>
+          <th>Validade</th><th>Link de acesso</th><th>Ações</th>
         </tr>
       </thead>
       <tbody>
-        {% for user in users %}
+        {% for u in users %}
         <tr>
-          <td>{{ user.id }}</td>
+          <td style="color:var(--muted)">{{ u.id }}</td>
           <td>
-            <strong>{{ user.username }}</strong>
-            {% if user.is_admin %}<span class="badge badge-admin">ADMIN</span>{% endif %}
-            {% if user.email %}<br><span style="color:var(--muted);font-size:.72rem">{{ user.email }}</span>{% endif %}
+            <strong>{{ u.username }}</strong>
+            {% if u.is_admin %}<span class="badge b-admin">ADMIN</span>{% endif %}
           </td>
-          <td style="font-size:.72rem">
-            {% if user.xtream_server %}
-              <span class="badge badge-ok">✓ Xtream</span><br>
-              <span style="color:var(--muted)">{{ user.xtream_server[:30] }}</span><br>
-              <span style="color:var(--muted)">{{ user.xtream_user }}/{{ user.xtream_pass }}</span>
-            {% elif user.playlist_url %}
-              <span class="badge" style="background:rgba(59,130,246,.15);color:#60a5fa">M3U</span><br>
-              <span style="color:var(--muted)">{{ user.playlist_url[:40] }}</span>
+          <td>
+            {% if u.xtream_server %}
+              <span class="badge b-ok">✓ Xtream</span><br>
+              <span style="color:var(--muted);font-size:.7rem">
+                {{ u.xtream_server[:35] }}<br>
+                {{ u.xtream_user }} / {{ u.xtream_pass }}
+              </span>
+            {% elif u.playlist_url %}
+              <span class="badge" style="background:rgba(59,130,246,.12);color:#60a5fa">M3U</span><br>
+              <span style="color:var(--muted);font-size:.7rem">{{ u.playlist_url[:50] }}</span>
             {% else %}
-              <span class="badge badge-no">Sem lista</span>
+              <span class="badge b-no">Sem lista</span>
             {% endif %}
           </td>
-          <td style="font-size:.72rem;color:var(--muted)">
-            {{ user.dias_acesso }} dias<br>
-            {{ user.created_at[:10] if user.created_at else '' }}
+          <td style="color:var(--muted);font-size:.72rem">
+            {{ u.dias }} dias<br>{{ (u.created_at or '')[:10] }}
           </td>
-          <td style="font-size:.68rem;word-break:break-all;max-width:140px">
-            {% if user.access_token %}
-            <code style="color:var(--gold)">{{ user.access_token[:20] }}...</code><br>
-            <a href="/login/token?t={{ user.access_token }}" style="color:var(--accent);font-size:.65rem" target="_blank">🔗 Link de acesso</a>
+          <td style="font-size:.68rem;max-width:160px;word-break:break-all">
+            {% if u.access_token %}
+            <code style="color:var(--gold);font-size:.65rem">{{ u.access_token[:22] }}…</code><br>
+            <a href="/login/token?t={{ u.access_token }}" target="_blank"
+               style="color:var(--accent)">🔗 Link direto</a>
             {% else %}—{% endif %}
           </td>
           <td>
-            <div style="display:flex;flex-direction:column;gap:.3rem">
-              <!-- Edit form -->
-              <button class="btn-sm" onclick="toggleEdit({{ user.id }})">✏️ Editar</button>
-              <form method="post" style="display:inline">
-                <input type="hidden" name="action" value="gen_token">
-                <input type="hidden" name="uid" value="{{ user.id }}">
-                <button class="btn-sm" type="submit">🔑 Token</button>
+            <div class="row-actions">
+              <button class="tbtn" onclick="toggleEdit({{ u.id }})">✏️</button>
+              <form class="inline-form" method="post">
+                <input type="hidden" name="a" value="token">
+                <input type="hidden" name="uid" value="{{ u.id }}">
+                <button class="tbtn" type="submit">🔑</button>
               </form>
-              {% if not user.is_admin %}
-              <form method="post" onsubmit="return confirm('Excluir {{ user.username }}?')">
-                <input type="hidden" name="action" value="delete">
-                <input type="hidden" name="uid" value="{{ user.id }}">
-                <button class="btn-sm" type="submit" style="color:var(--accent)">🗑</button>
+              {% if not u.is_admin %}
+              <form class="inline-form" method="post"
+                    onsubmit="return confirm('Excluir {{ u.username }}?')">
+                <input type="hidden" name="a" value="del">
+                <input type="hidden" name="uid" value="{{ u.id }}">
+                <button class="tbtn" type="submit" style="color:var(--accent)">🗑</button>
               </form>
               {% endif %}
             </div>
 
-            <!-- Inline edit form (hidden) -->
-            <div id="edit-{{ user.id }}" style="display:none;margin-top:.5rem">
+            <div class="edit-panel" id="ep-{{ u.id }}">
               <form method="post">
-                <input type="hidden" name="action" value="update">
-                <input type="hidden" name="uid" value="{{ user.id }}">
-                <div style="display:flex;flex-direction:column;gap:.3rem">
-                  <input name="xtream_server" value="{{ user.xtream_server or '' }}" placeholder="Servidor Xtream" style="font-size:.75rem">
-                  <input name="xtream_user" value="{{ user.xtream_user or '' }}" placeholder="Usuário Xtream" style="font-size:.75rem">
-                  <input name="xtream_pass" value="{{ user.xtream_pass or '' }}" placeholder="Senha Xtream" style="font-size:.75rem">
-                  <input name="playlist_url" value="{{ user.playlist_url or '' }}" placeholder="URL M3U (alternativa)" style="font-size:.75rem">
-                  <input name="email" value="{{ user.email or '' }}" placeholder="E-mail" style="font-size:.75rem">
-                  <input name="dias" type="number" value="{{ user.dias_acesso }}" placeholder="Dias" style="font-size:.75rem">
-                  <button class="btn-sm btn-accent" type="submit">💾 Salvar</button>
+                <input type="hidden" name="a" value="update">
+                <input type="hidden" name="uid" value="{{ u.id }}">
+                <div style="display:flex;flex-direction:column;gap:.35rem">
+                  <input name="srv"  value="{{ u.xtream_server or '' }}" placeholder="Servidor Xtream" style="font-size:.75rem">
+                  <input name="xu"   value="{{ u.xtream_user or '' }}"   placeholder="Usuário Xtream"  style="font-size:.75rem">
+                  <input name="xp"   value="{{ u.xtream_pass or '' }}"   placeholder="Senha Xtream"    style="font-size:.75rem">
+                  <input name="purl" value="{{ u.playlist_url or '' }}"  placeholder="URL M3U"         style="font-size:.75rem">
+                  <input name="dias" type="number" value="{{ u.dias }}"  placeholder="Dias"            style="font-size:.75rem">
+                  <button class="btn" type="submit" style="font-size:.78rem;padding:.4rem">💾 Salvar</button>
                 </div>
               </form>
             </div>
@@ -1263,79 +1171,77 @@ ADMIN_HTML = _HEAD("Admin") + _HEADER + """
     </table>
   </div>
 
-  <div style="background:var(--bg2);border:1px solid var(--border);border-radius:12px;padding:1rem;margin-top:1.5rem;font-size:.82rem;color:var(--muted)">
-    <strong style="color:var(--text)">🔗 Como compartilhar acesso com um cliente:</strong><br><br>
-    1. Crie o usuário com as credenciais Xtream dele<br>
-    2. Gere um token com o botão 🔑<br>
-    3. Envie o link: <code style="color:var(--gold)">https://medflix.onrender.com/login/token?t=TOKEN</code><br>
-    4. O cliente clica no link e já entra direto no site com os canais dele
+  <div style="background:var(--bg2);border:1px solid var(--border);border-radius:10px;
+              padding:1rem;margin-top:1.5rem;font-size:.8rem;color:var(--muted);line-height:1.7">
+    <strong style="color:var(--text)">📋 Como funciona o vínculo:</strong><br>
+    1. Crie o usuário e preencha as credenciais Xtream do cliente<br>
+    2. Clique em 🔑 para gerar o token de acesso<br>
+    3. Copie o link <em>"🔗 Link direto"</em> e envie para o cliente<br>
+    4. O cliente clica no link → faz login automático → vê os canais <strong>só dele</strong>
   </div>
 </div>
-
+</div>
 <script>
-function toggleEdit(id) {
-  var el = document.getElementById('edit-'+id);
-  el.style.display = el.style.display === 'none' ? 'block' : 'none';
+function toggleEdit(id){
+  var p=document.getElementById('ep-'+id);
+  p.style.display=p.style.display==='none'||p.style.display===''?'block':'none';
 }
 </script>
-</body></html>"""
+"""
 
-SETUP_HTML = _HEAD("Setup") + """
-<div class="form-wrap">
-  <div class="card-form">
-    <div class="form-title">🚀 Setup Inicial</div>
-    <p style="color:var(--muted);font-size:.82rem;text-align:center;margin-bottom:1.2rem">
-      Crie o primeiro administrador do sistema
-    </p>
-    {% if error %}<div class="alert alert-error">{{ error }}</div>{% endif %}
-    <div style="background:rgba(245,197,24,.05);border:1px solid rgba(245,197,24,.2);
-                border-radius:8px;padding:.7rem;margin-bottom:1rem;font-size:.78rem;color:var(--muted)">
-      Código padrão: <code style="color:var(--gold)">medflix2026</code>
-      — ou defina a env var <code>SETUP_CODE</code>
-    </div>
-    <form method="post">
-      <div class="form-group"><label>Usuário</label><input name="username" required placeholder="admin"></div>
-      <div class="form-group"><label>Senha (mín. 6 caracteres)</label><input name="password" type="password" required></div>
-      <div class="form-group"><label>Código de ativação</label><input name="code" type="password" required placeholder="medflix2026"></div>
-      <button class="btn-full" type="submit">Criar Administrador</button>
-    </form>
+SETUP_HTML = """
+<div class="card-form" style="margin-top:3rem">
+  <div class="form-title">🚀 Setup Inicial</div>
+  <div style="background:rgba(245,197,24,.05);border:1px solid rgba(245,197,24,.2);
+              border-radius:7px;padding:.6rem .8rem;margin-bottom:1rem;font-size:.75rem;color:var(--muted)">
+    Código padrão: <code style="color:var(--gold)">medflix2026</code>
+    — ou defina a env var <code>SETUP_CODE</code>
   </div>
+  {% if err %}<div class="alert alert-err">{{ err }}</div>{% endif %}
+  <form method="post">
+    <div class="fg"><label>Usuário admin</label><input name="u" required placeholder="admin"></div>
+    <div class="fg"><label>Senha (mín 6)</label><input name="p" type="password" required></div>
+    <div class="fg"><label>Código de ativação</label><input name="code" type="password" required placeholder="medflix2026"></div>
+    <button class="btn btn-full" type="submit">Criar Admin</button>
+  </form>
 </div>
-</body></html>"""
+"""
 
-RESET_HTML = _HEAD("Recuperar Acesso") + """
-<div class="form-wrap">
-  <div class="card-form">
-    <div class="form-title">🔧 Recuperar Acesso Admin</div>
-    {% if error %}<div class="alert alert-error">{{ error }}</div>{% endif %}
-    <form method="post">
-      <div class="form-group"><label>Chave (ADMIN_RESET_KEY)</label><input name="key" type="password" required></div>
-      <div class="form-group"><label>Usuário admin</label><input name="username" required></div>
-      <div class="form-group"><label>Nova senha</label><input name="password" type="password" required></div>
-      <button class="btn-full" type="submit">Recuperar</button>
-    </form>
-  </div>
+RESET_HTML = """
+<div class="card-form" style="margin-top:3rem">
+  <div class="form-title">🔧 Recuperar Acesso Admin</div>
+  {% if err %}<div class="alert alert-err">{{ err }}</div>{% endif %}
+  <form method="post">
+    <div class="fg"><label>Chave (ADMIN_RESET_KEY)</label><input name="key" type="password" required></div>
+    <div class="fg"><label>Usuário</label><input name="u" required></div>
+    <div class="fg"><label>Nova senha</label><input name="p" type="password" required></div>
+    <button class="btn btn-full" type="submit">Recuperar</button>
+  </form>
 </div>
-</body></html>"""
+"""
 
-SIMPLE_PAGE = """<!DOCTYPE html><html><head><meta charset='UTF-8'>
-<meta name='viewport' content='width=device-width,initial-scale=1'>
-<title>{{ title }}</title>
-<style>body{background:#08080f;color:#e8e8f0;font-family:system-ui;display:flex;
-align-items:center;justify-content:center;min-height:100vh;padding:1rem}
-.box{background:#0f0f1a;border:1px solid rgba(255,255,255,.1);border-radius:16px;
-padding:2rem;max-width:420px;width:100%;text-align:center}
-h2{margin:.5rem 0;color:#fff} p{color:#888;font-size:.9rem;margin:.5rem 0}
-a{display:inline-block;margin-top:1rem;background:#e63950;color:#fff;padding:.6rem 1.4rem;
-border-radius:8px;text-decoration:none;font-weight:700}</style></head>
-<body><div class='box'>
-<div style='font-size:2.5rem'>{{ icon }}</div>
+SIMPLE_HTML = """<!DOCTYPE html><html><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>body{background:#09090f;color:#eee;font-family:system-ui;
+  display:flex;align-items:center;justify-content:center;min-height:100vh;padding:1rem}
+.box{background:#111118;border:1px solid rgba(255,255,255,.08);border-radius:14px;
+  padding:2rem;max-width:400px;width:100%;text-align:center}
+h2{margin:.4rem 0;font-size:1.1rem}p{color:#666;font-size:.85rem;margin:.4rem 0}
+a{display:inline-block;margin-top:1rem;background:#e8183a;color:#fff;
+  padding:.55rem 1.3rem;border-radius:8px;text-decoration:none;font-weight:700}
+</style></head><body><div class="box">
+<div style="font-size:2.5rem">{{ icon }}</div>
 <h2>{{ title }}</h2><p>{{ msg }}</p>
-<a href='{{ link }}'>{{ link_text }}</a>
+<a href="{{ link }}">{{ ltext }}</a>
 </div></body></html>"""
 
-# ── Run ─────────────────────────────────────────────────────────────────────
+# ─── Template filter ─────────────────────────────────────────────────────────
+import base64 as _b64
+@app.template_filter("b64id")
+def b64id_filter(url):
+    return _b64.urlsafe_b64encode(url.encode()).decode()[:32]
+
+# ─── Run ─────────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
     _init_db()
-    port = int(os.environ.get("PORT", 5000))
-    app.run(host="0.0.0.0", port=port, debug=False)
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT",5000)), debug=False)
