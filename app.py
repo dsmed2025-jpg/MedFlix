@@ -105,7 +105,118 @@ IPTV_UA = ("Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 "
            "(KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36")
 
 _xtream_cache = {}  # (user_id, endpoint) → (data, timestamp)
+_m3u_cache = {}     # user_id → (parsed_data, timestamp)
 CACHE_TTL = 3600    # 1 hour
+
+def parse_m3u(m3u_content):
+    """Parse M3U playlist and return structured list."""
+    if not m3u_content:
+        return [], {}, {}, []
+    
+    lines = m3u_content.replace('\r\n', '\n').replace('\r', '\n').split('\n')
+    all_items = []
+    current_info = {}
+    live_cats = {}
+    vod_cats = {}
+    series_cats = {}
+    
+    for line in lines:
+        line = line.strip()
+        if not line or line.startswith('#EXTM3U'):
+            continue
+        
+        if line.startswith('#EXTINF:'):
+            info = line[8:] if line.startswith('#EXTINF:-1') else line[7:]
+            parts = info.split(',', 1)
+            attrs = parts[0].strip()
+            name = parts[1].strip() if len(parts) > 1 else 'Sem nome'
+            
+            current_info = {"name": name}
+            
+            tvg_match = re.search(r'tvg-name="([^"]*)"', attrs)
+            if tvg_match:
+                current_info["name"] = tvg_match.group(1)
+            
+            logo_match = re.search(r'tvg-logo="([^"]*)"', attrs)
+            if logo_match:
+                current_info["stream_icon"] = logo_match.group(1)
+            
+            group_match = re.search(r'group-title="([^"]*)"', attrs)
+            if group_match:
+                current_info["category_name"] = group_match.group(1)
+            else:
+                current_info["category_name"] = "Geral"
+            
+        elif line.startswith('#'):
+            continue
+        else:
+            if line and current_info.get("name") and current_info["name"] != 'Sem nome':
+                stream_url = line
+                stream_id = abs(hash(stream_url)) % (10**12)
+                cat_name = current_info.get("category_name", "Geral")
+                cat_id = cat_name.replace(" ", "_").lower()
+                
+                item = {
+                    "name": current_info.get("name", "Sem nome"),
+                    "stream_id": stream_id,
+                    "stream_icon": current_info.get("stream_icon", ""),
+                    "category_name": cat_name,
+                    "category_id": cat_id,
+                    "_url": stream_url,
+                }
+                all_items.append(item)
+                
+                if cat_name not in live_cats:
+                    live_cats[cat_name] = {"category_id": cat_id, "category_name": cat_name}
+                if cat_name not in vod_cats:
+                    vod_cats[cat_name] = {"category_id": cat_id, "category_name": cat_name}
+            
+            current_info = {}
+    
+    return all_items, live_cats, vod_cats, series_cats
+
+def get_m3u_streams(u):
+    """Get parsed M3U streams for user, with caching."""
+    playlist_url = (u.get("playlist_url") or "").strip()
+    if not playlist_url:
+        return {"items": [], "live": [], "vod": [], "series": [], "live_categories": [], "vod_categories": [], "series_categories": []}
+    
+    cache_key = u["id"]
+    if cache_key in _m3u_cache:
+        data, ts = _m3u_cache[cache_key]
+        if time.time() - ts < CACHE_TTL:
+            return data
+    
+    try:
+        req = urllib.request.Request(playlist_url, headers={"User-Agent": IPTV_UA})
+        with urllib.request.urlopen(req, timeout=20) as r:
+            content = r.read().decode("utf-8", "ignore")
+        
+        all_items, live_cats, vod_cats, series_cats = parse_m3u(content)
+        
+        result = {
+            "items": all_items,
+            "live": all_items,
+            "vod": all_items,
+            "series": [],
+            "live_categories": list(live_cats.values()),
+            "vod_categories": list(vod_cats.values()),
+            "series_categories": [],
+        }
+        
+        _m3u_cache[cache_key] = (result, time.time())
+        return result
+    except Exception as e:
+        app.logger.warning(f"M3U parse error: {e}")
+        return {"items": [], "live": [], "vod": [], "series": [], "live_categories": [], "vod_categories": [], "series_categories": []}
+
+def m3u_get_stream_url(u, stream_id):
+    """Get stream URL from parsed M3U data by stream_id."""
+    streams = get_m3u_streams(u)
+    for item in streams.get("items", []):
+        if str(item.get("stream_id")) == str(stream_id):
+            return item.get("_url")
+    return None
 
 def xtream_request(server, username, password, endpoint, params=None, user_id=None):
     """Make a request to Xtream Codes API with caching."""
@@ -201,6 +312,8 @@ def home():
     u = current_user()
     server, username, password = get_user_xtream(u)
     has_xtream = bool(server and username and password)
+    has_m3u = bool((u.get("playlist_url") or "").strip())
+    has_content = has_xtream or has_m3u
     
     live_cats = vod_cats = series_cats = None
     account_info = None
@@ -212,9 +325,14 @@ def home():
         live_cats   = xtream_request(server, username, password, "get_live_categories",   user_id=u["id"]) or []
         vod_cats    = xtream_request(server, username, password, "get_vod_categories",    user_id=u["id"]) or []
         series_cats = xtream_request(server, username, password, "get_series_categories", user_id=u["id"]) or []
+    elif has_m3u:
+        m3u_data = get_m3u_streams(u)
+        live_cats   = m3u_data.get("live_categories", [])
+        vod_cats    = m3u_data.get("vod_categories", [])
+        series_cats = []
     
     return render_template_string(HOME_HTML,
-        u=u, has_xtream=has_xtream,
+        u=u, has_xtream=has_xtream, has_m3u=has_m3u, has_content=has_content,
         live_cats=live_cats, vod_cats=vod_cats, series_cats=series_cats,
         account_info=account_info)
 
@@ -224,6 +342,7 @@ def browse(content_type):
     """Browse live/vod/series by category."""
     u = current_user()
     server, username, password = get_user_xtream(u)
+    playlist_url = (u.get("playlist_url") or "").strip()
     category_id = request.args.get("cat", "")
     page = int(request.args.get("p", 1))
     per_page = 40
@@ -244,6 +363,12 @@ def browse(content_type):
             params["category_id"] = category_id
         
         items = xtream_request(server, username, password, action, params, user_id=u["id"]) or []
+    elif playlist_url:
+        m3u_data = get_m3u_streams(u)
+        items = m3u_data.get("items", [])
+    
+    if category_id and (server and username and password or playlist_url):
+        items = [i for i in items if i.get("category_id", "").replace(" ", "_").lower() == category_id]
     
     total = len(items)
     start = (page-1)*per_page
@@ -288,17 +413,19 @@ def watch(content_type, stream_id):
                 info = series_info.get("info", {})
                 title = title or info.get("name","")
                 cover = cover or info.get("cover","")
-                # Flatten episodes
                 for season_num, season_eps in (series_info.get("episodes") or {}).items():
                     for ep in (season_eps or []):
                         ep["_season"] = season_num
                         episodes.append(ep)
-                # Play first episode if no specific stream
                 if episodes:
                     first = episodes[0]
                     stream_id = first.get("id", stream_id)
                     stream_url = xtream_get_stream_url(u, stream_id, "series",
                                                        first.get("container_extension","mp4"))
+    else:
+        stream_url = m3u_get_stream_url(u, stream_id)
+        if not title:
+            title = request.args.get("name", "Stream")
     
     return render_template_string(WATCH_HTML,
         u=u, stream_url=stream_url, title=title, cover=cover,
@@ -536,6 +663,8 @@ def api_clear_cache():
     keys_to_del = [k for k in _xtream_cache if k[0] == u["id"]]
     for k in keys_to_del:
         del _xtream_cache[k]
+    if u["id"] in _m3u_cache:
+        del _m3u_cache[u["id"]]
     session.pop("_u", None)
     return jsonify({"ok": True, "cleared": len(keys_to_del)})
 
@@ -762,12 +891,12 @@ LOGIN_HTML = _HEAD("Login") + """
 
 HOME_HTML = _HEAD("Início") + _HEADER + """
 <div class="page">
-{% if not has_xtream %}
+{% if not has_content %}
   <div class="hero">
     <div class="hero-icon">📡</div>
     <div style="flex:1">
       <h2>Configure sua lista de canais</h2>
-      <p>Sua conta ainda não tem um servidor IPTV vinculado.<br>
+      <p>Sua conta ainda não tem um servidor IPTV ou URL M3U vinculado.<br>
          Entre em contato com o administrador para vincular sua assinatura.</p>
       {% if u and u.is_admin %}
       <div class="hero-actions">
