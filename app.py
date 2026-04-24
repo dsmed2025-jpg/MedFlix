@@ -79,16 +79,13 @@ def _init_db():
 def logged_in(): return "uid" in session
 
 def me():
+    """Always read from DB — never cache in session (avoids stale data after admin updates)."""
     if not logged_in(): return None
-    u = session.get("_me")
-    if u: return u
     db = get_db()
     row = db.execute("SELECT * FROM users WHERE id=?", (session["uid"],)).fetchone()
     db.close()
     if not row: return None
-    u = dict(row)
-    session["_me"] = u
-    return u
+    return dict(row)
 
 def login_required(f):
     @wraps(f)
@@ -340,10 +337,25 @@ def tv():
         subcats = []
 
     genre_counts = get_genre_counts(channels)
+    # If user has credentials but no channels yet, trigger background load
+    loading = False
+    if not channels:
+        srv  = (u.get("xtream_server") or "").strip()
+        xu   = (u.get("xtream_user")   or "").strip()
+        xp   = (u.get("xtream_pass")   or "").strip()
+        purl = (u.get("playlist_url")  or "").strip()
+        has_creds = (srv and xu and xp) or bool(purl)
+        if has_creds:
+            loading = True
+            # Trigger load if not already cached
+            if u["id"] not in _parse_cache:
+                threading.Thread(target=_preload_user, args=(u,), daemon=True).start()
+    else:
+        has_creds = True
     return _page("tv", TV_HTML,
                  u=u, channels=filtered, has_list=bool(channels),
                  genre=genre, subcat=subcat, q=q,
-                 subcats=subcats,
+                 subcats=subcats, loading=loading,
                  genres=GENRES, genre_counts=genre_counts)
 
 @app.route("/watch")
@@ -367,9 +379,18 @@ def watch():
 @login_required
 def api_reload():
     u = me()
-    _parse_cache.pop(u["id"], None)
+    uid = u["id"]
+    _parse_cache.pop(uid, None)
     threading.Thread(target=_preload_user, args=(u,), daemon=True).start()
-    return jsonify({"ok": True})
+    return jsonify({"ok": True, "uid": uid})
+
+@app.route("/api/channels/count")
+@login_required
+def api_channels_count():
+    """Quick endpoint to check if channels loaded yet."""
+    u = me()
+    chans = get_user_channels(u)
+    return jsonify({"count": len(chans), "has_list": bool(chans)})
 
 @app.route("/api/channels")
 @login_required
@@ -465,8 +486,14 @@ def admin():
                      int(request.form.get("dias",30)),
                      uid))
                 db.commit()
-                _parse_cache.pop(uid, None)   # invalidate cache
-                msg = "✅ Usuário atualizado."
+                _parse_cache.pop(uid, None)   # force re-fetch channels
+                # Preload in background so user sees content immediately after login
+                db2 = get_db()
+                updated_u = db2.execute("SELECT * FROM users WHERE id=?", (uid,)).fetchone()
+                db2.close()
+                if updated_u:
+                    threading.Thread(target=_preload_user, args=(dict(updated_u),), daemon=True).start()
+                msg = "✅ Usuário atualizado. Canais sendo carregados em background..."
             elif a == "token":
                 uid = int(request.form.get("uid"))
                 tok = _sec.token_urlsafe(24)
@@ -819,6 +846,33 @@ TV_HTML = """
   <!-- MAIN -->
   <main class="main">
     {% if not has_list %}
+    {% if loading %}
+    <!-- Has credentials but channels not loaded yet — show spinner with auto-reload -->
+    <div class="no-list" id="loading-box">
+      <div class="spinner" style="margin:0 auto 1rem"></div>
+      <h2>Carregando sua lista...</h2>
+      <p style="color:var(--muted)">Estamos buscando seus canais e filmes.<br>
+         Isso pode levar até 1 minuto na primeira vez.</p>
+      <div style="margin-top:1rem;font-size:.78rem;color:var(--muted)" id="load-count">Aguarde...</div>
+    </div>
+    <script>
+    // Poll until channels are loaded, then reload the page
+    var attempts = 0;
+    function checkChannels(){
+      fetch('/api/channels/count').then(function(r){return r.json();}).then(function(d){
+        document.getElementById('load-count').textContent =
+          d.count > 0 ? d.count + ' itens carregados...' : 'Buscando canais...';
+        if(d.count > 0){
+          setTimeout(function(){ location.reload(); }, 800);
+        } else {
+          attempts++;
+          setTimeout(checkChannels, attempts < 10 ? 2000 : 4000);
+        }
+      }).catch(function(){ setTimeout(checkChannels, 3000); });
+    }
+    checkChannels();
+    </script>
+    {% else %}
     <div class="no-list">
       <div class="icon">📡</div>
       <h2>Lista não configurada</h2>
@@ -828,6 +882,7 @@ TV_HTML = """
       <a href="/admin" class="btn" style="display:inline-block;margin-top:1rem">⚙️ Configurar agora</a>
       {% endif %}
     </div>
+    {% endif %}
 
     {% elif not channels %}
     <div class="no-list">
