@@ -14,7 +14,10 @@ from werkzeug.security import generate_password_hash, check_password_hash
 
 # ─── App setup ───────────────────────────────────────────────────────────────
 BASE_DIR = Path(__file__).parent
-DB_PATH  = BASE_DIR / "medflix.db"
+if os.getenv("RENDER"):
+    DB_PATH = Path("/opt/render/project/src/medflix.db")
+else:
+    DB_PATH = BASE_DIR / "medflix.db"
 app = Flask(__name__)
 app.config.update(
     SECRET_KEY               = os.getenv("SECRET_KEY", "medflix-2026-secret"),
